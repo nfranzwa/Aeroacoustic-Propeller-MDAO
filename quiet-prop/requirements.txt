@@ -1,5 +1,11 @@
-openmdao>=3.27
-cadquery>=2.4
-numpy>=1.26
-scipy>=1.12
-matplotlib>=3.8
+openmdao
+ccblade
+pyoptsparse
+pymoo
+scikit-learn
+botorch
+cadquery
+matplotlib
+numpy
+scipy
+pandas
