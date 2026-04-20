@@ -261,8 +261,10 @@ class BPMComponent(om.ExplicitComponent):
         self._blade = self.options["blade"] or baseline_hqprop()
         N      = self.options["n_stations"]
         n_freq = len(THIRD_OCT_FREQS)
+        _, chord0, _ = self._blade.get_stations(N)
 
         self.add_input("r_m",     val=np.zeros(N), units="m")
+        self.add_input("chord_m", val=chord0,       units="m")
         self.add_input("v_rel",   val=np.zeros(N), units="m/s")
         self.add_input("aoa_deg", val=np.zeros(N))
         self.add_input("cl",      val=np.zeros(N))
@@ -277,21 +279,21 @@ class BPMComponent(om.ExplicitComponent):
         self.add_output("SPL_spectrum",  val=np.zeros(n_freq))
         self.add_output("freq",          val=THIRD_OCT_FREQS.copy(), units="Hz")
 
-    def compute(self, inputs, outputs):
-        blade = self._blade
-        _, chord_m, _ = blade.get_stations(self.options["n_stations"])
+    def setup_partials(self):
+        self.declare_partials("*", "*", method="fd", step=1e-4)
 
+    def compute(self, inputs, outputs):
         res = bpm_noise(
             r_m=inputs["r_m"],
-            chord_m=chord_m,
+            chord_m=inputs["chord_m"],
             v_rel=inputs["v_rel"],
             aoa_deg=inputs["aoa_deg"],
             cl=inputs["cl"],
             thrust=float(inputs["thrust"][0]),
             torque=float(inputs["torque"][0]),
             rpm=float(inputs["rpm"][0]),
-            num_blades=blade.num_blades,
-            radius_m=blade.radius_m,
+            num_blades=self._blade.num_blades,
+            radius_m=self._blade.radius_m,
             rho=float(inputs["rho"][0]),
             r_obs=self.options["r_obs"],
         )

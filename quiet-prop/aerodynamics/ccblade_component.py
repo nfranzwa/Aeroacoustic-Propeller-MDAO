@@ -189,9 +189,17 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
 STATIC_THRESHOLD = 0.5    # m/s — below this, use the static solver
 
 def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
+              chord_override=None, twist_override=None,
               tol=1e-8, max_iter=300):
     """
     Blade Element Momentum solver for a propeller.
+
+    Parameters
+    ----------
+    chord_override : array (n_stations,) or None
+        If provided, replaces blade chord at the n_stations resolution.
+    twist_override : array (n_stations,) or None
+        If provided, replaces blade twist (deg) at the n_stations resolution.
 
     Returns dict: thrust, torque, power, efficiency, CT, CP,
                   r, v_rel, aoa_deg, cl, cd
@@ -203,6 +211,10 @@ def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
     V     = float(v_inf)
 
     r, chord, twist_deg = blade.get_stations(n_stations)
+    if chord_override is not None:
+        chord = np.asarray(chord_override, dtype=float)
+    if twist_override is not None:
+        twist_deg = np.asarray(twist_override, dtype=float)
     r      = np.clip(r, R_hub + 1e-6, R - 1e-6)
     sigma  = B * chord / (2.0 * np.pi * r)
 
@@ -244,10 +256,13 @@ class CCBladeComponent(om.ExplicitComponent):
     def setup(self):
         self._blade = self.options["blade"] or baseline_hqprop()
         N = self.options["n_stations"]
+        _, chord0, twist0 = self._blade.get_stations(N)
 
-        self.add_input("rpm",   val=5000.0, units="rpm")
-        self.add_input("v_inf", val=0.0,    units="m/s")
-        self.add_input("rho",   val=1.225,  units="kg/m**3")
+        self.add_input("rpm",      val=5000.0,    units="rpm")
+        self.add_input("v_inf",    val=0.0,        units="m/s")
+        self.add_input("rho",      val=1.225,      units="kg/m**3")
+        self.add_input("chord_m",  val=chord0,     units="m")
+        self.add_input("twist_deg",val=twist0)
 
         self.add_output("thrust",     val=0.0, units="N")
         self.add_output("torque",     val=0.0, units="N*m")
@@ -261,12 +276,17 @@ class CCBladeComponent(om.ExplicitComponent):
         self.add_output("cl",     val=np.zeros(N))
         self.add_output("cd",     val=np.zeros(N))
 
+    def setup_partials(self):
+        self.declare_partials("*", "*", method="fd", step=1e-4)
+
     def compute(self, inputs, outputs):
         res = bem_solve(self._blade,
                         rpm=float(inputs["rpm"][0]),
                         v_inf=float(inputs["v_inf"][0]),
                         rho=float(inputs["rho"][0]),
-                        n_stations=self.options["n_stations"])
+                        n_stations=self.options["n_stations"],
+                        chord_override=inputs["chord_m"],
+                        twist_override=inputs["twist_deg"])
         for k in ("thrust", "torque", "power", "efficiency", "CT", "CP"):
             outputs[k] = res[k]
         outputs["r_m"]     = res["r"]
