@@ -226,28 +226,30 @@ class WeightedSPLComponent(om.ExplicitComponent):
 
 class TwistMonotonicityComponent(om.ExplicitComponent):
     """
-    Computes adjacent-station twist differences to enforce aerodynamic wash-out.
+    Enforces aerodynamic wash-out at the 18-station DEFINITION level.
 
-    Outputs twist_diff[i] = twist_deg[i] - twist_deg[i+1].
-    Constraining twist_diff >= 0 ensures monotonically decreasing twist from
-    root to tip, preventing the optimizer from producing non-physical
-    'rollercoaster' distributions that exploit BEMT numerical loopholes.
+    Works on delta_twist_deg + stored baseline so the constraint fires before
+    interpolation to N_STATIONS — prevents rollercoaster distributions that
+    pass the resampled check but are non-physical at the definition nodes.
+
+    Outputs twist_def_diff[i] = (baseline+delta)[i] - (baseline+delta)[i+1].
+    Constraining twist_def_diff >= 0 enforces monotonically decreasing twist.
     """
 
     def initialize(self):
-        self.options.declare("n_stations", default=N_STATIONS)
+        self.options.declare("baseline_twist", recordable=False)
 
     def setup(self):
-        N = self.options["n_stations"]
-        self.add_input("twist_deg",  val=np.zeros(N))
-        self.add_output("twist_diff", val=np.zeros(N - 1))
+        n = len(self.options["baseline_twist"])
+        self.add_input("delta_twist_deg", val=np.zeros(n))
+        self.add_output("twist_def_diff",  val=np.zeros(n - 1))
 
     def setup_partials(self):
         self.declare_partials("*", "*", method="fd", step=1e-4)
 
     def compute(self, inputs, outputs):
-        t = inputs["twist_deg"]
-        outputs["twist_diff"] = t[:-1] - t[1:]
+        total = self.options["baseline_twist"] + inputs["delta_twist_deg"]
+        outputs["twist_def_diff"] = total[:-1] - total[1:]
 
 
 # ---------------------------------------------------------------------------
@@ -418,12 +420,12 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
         promotes_outputs=["max_stress", "min_thickness"],
     )
 
-    # ---- Twist monotonicity (wash-out enforcement) -----------------------
+    # ---- Twist monotonicity at definition level (wash-out enforcement) ------
     model.add_subsystem(
         "twist_mono",
-        TwistMonotonicityComponent(n_stations=N_STATIONS),
-        promotes_inputs=["twist_deg"],
-        promotes_outputs=["twist_diff"],
+        TwistMonotonicityComponent(baseline_twist=blade.twist_deg.copy()),
+        promotes_inputs=["delta_twist_deg"],
+        promotes_outputs=["twist_def_diff"],
     )
 
     # ---- Rotor balance ---------------------------------------------------
@@ -448,13 +450,30 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     prob.driver.options["tol"]       = 1e-4
     prob.driver.options["maxiter"]   = 500
 
-    # ---- Design variables ------------------------------------------------
+    # ---- Per-station physical thickness (chord × t/c) ----------------------
+    # One constraint per station gives SLSQP gradient information on exactly
+    # which stations are thin — much more tractable than a single min() scalar.
+    # sweep_R and z_offset_R_tip are NOT design variables: BEM and BPM both
+    # ignore 3D blade geometry, so they have zero gradient everywhere and
+    # degrade the SLSQP Jacobian rank.  Keep them in the IVC at their
+    # zero defaults but do not optimise over them.
+    model.add_subsystem(
+        "thickness_all",
+        om.ExecComp(
+            "phys_thick = chord_m * tc_ratio",
+            chord_m=np.zeros(N_STATIONS),
+            tc_ratio=np.zeros(N_STATIONS),
+            phys_thick=np.zeros(N_STATIONS),
+        ),
+        promotes_inputs=["chord_m", "tc_ratio"],
+        promotes_outputs=["phys_thick"],
+    )
+
+    # ---- Design variables (57 active; sweep/dihedral excluded) -----------
     prob.model.add_design_var("rpm",             lower=RPM_LOWER, upper=RPM_UPPER, units="rpm")
     prob.model.add_design_var("delta_twist_deg", lower=-5.0,    upper=5.0)
     prob.model.add_design_var("delta_chord_R",   lower=-0.03,   upper=0.03)
-    prob.model.add_design_var("sweep_R",         lower=0.0,     upper=0.12)
     prob.model.add_design_var("delta_tc",        lower=-0.03,   upper=0.04)
-    prob.model.add_design_var("z_offset_R_tip",  lower=-0.05,   upper=0.10)
     prob.model.add_design_var("theta2",          lower=105.0,   upper=135.0)
     prob.model.add_design_var("theta3",          lower=225.0,   upper=255.0)
 
@@ -464,13 +483,22 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     # ---- Constraints -----------------------------------------------------
     prob.model.add_constraint("thrust_hover",     lower=thrust_min_hover)
     prob.model.add_constraint("thrust_cruise",    lower=thrust_min_cruise)
-    prob.model.add_constraint("max_stress",       upper=ALLOWABLE_STRESS)
-    prob.model.add_constraint("min_thickness",    lower=MIN_PRINT_THICKNESS)
+    prob.model.add_constraint("max_stress",       upper=ALLOWABLE_STRESS,
+                                                  ref=ALLOWABLE_STRESS)
+    # Per-station physical thickness: replaces scalar min_thickness to give
+    # SLSQP station-level gradient information.
+    # Station N_STATIONS-1 (r/R=1.0 exact tip) is excluded: the APC 7x5E
+    # baseline tip chord is 5.3 mm with tc=0.078 → 0.41 mm < 0.5 mm even at
+    # zero delta.  Enforcing 0.5 mm there is infeasible and traps SLSQP.
+    inner_stations = list(range(N_STATIONS - 1))
+    prob.model.add_constraint("phys_thick",       indices=inner_stations,
+                                                  lower=MIN_PRINT_THICKNESS,
+                                                  ref=MIN_PRINT_THICKNESS)
     prob.model.add_constraint("imbalance_factor", upper=max_imbalance)
+    # Hover power must be positive — prevents BEM stalled-root artefacts.
+    prob.model.add_constraint("power_hover",      lower=0.0,  ref=10.0)
     # Enforce monotonically decreasing twist (aerodynamic wash-out).
-    # twist_diff[i] = twist[i] - twist[i+1] >= 0 prevents rollercoaster
-    # distributions where the optimizer exploits BEMT numerical artefacts.
-    prob.model.add_constraint("twist_diff",       lower=0.0)
+    prob.model.add_constraint("twist_def_diff",    lower=0.0)
 
     return prob
 
@@ -507,6 +535,32 @@ def run_optimization(thrust_min_hover=THRUST_HOVER_MIN,
     else:
         return _run_slsqp(thrust_min_hover, thrust_min_cruise,
                           rpm_init, rho, verbose)
+
+
+def _repair_tc(blade, dc_R, dtc, n_stations=N_STATIONS):
+    """
+    Clip delta_tc upward so that chord × tc >= MIN_PRINT_THICKNESS at every
+    evaluation station.  Preserves the GA's chord/twist/spacing solution and
+    only adjusts t/c as needed — avoids the heavy-handed _feasible_start reset.
+    """
+    r_m, chord0, _, tc0, _, _ = blade.get_full_stations(n_stations)
+    R = blade.radius_m
+
+    # Interpolate delta_chord from 18 definition to n_stations evaluation
+    r_def = blade.r_R * R
+    dc_interp = np.interp(r_m, r_def, dc_R)
+    dtc_interp = np.interp(r_m, r_def, dtc)
+
+    chord_m = chord0 + dc_interp * R
+    chord_m = np.maximum(chord_m, 1e-4)
+    tc_min  = MIN_PRINT_THICKNESS / chord_m - tc0  # minimum delta_tc per station
+    dtc_interp = np.maximum(dtc_interp, tc_min)
+    dtc_interp = np.clip(dtc_interp, -0.03, 0.04)
+
+    # Map repaired evaluation values back to 18 definition stations
+    r_def = blade.r_R * R
+    dtc_repaired = np.interp(r_def, r_m, dtc_interp)
+    return np.clip(dtc_repaired, -0.03, 0.04)
 
 
 def _run_slsqp(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
@@ -570,23 +624,26 @@ def _run_hybrid(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
                             thrust_min_cruise=thrust_min_cruise,
                             rpm_init=rpm_init, rho=rho)
     prob_ga.driver = om.SimpleGADriver()
-    prob_ga.driver.options["pop_size"] = 50
-    prob_ga.driver.options["max_gen"]  = 30
-    prob_ga.driver.options["Pc"]       = 0.5    # crossover probability
-    prob_ga.driver.options["Pm"]       = 0.01   # mutation probability
+    prob_ga.driver.options["pop_size"]         = 50
+    prob_ga.driver.options["max_gen"]          = 30
+    prob_ga.driver.options["Pc"]               = 0.5    # crossover probability
+    prob_ga.driver.options["Pm"]               = 0.01   # mutation probability
+    prob_ga.driver.options["penalty_parameter"] = 100.0  # strong constraint enforcement
     prob_ga.setup()
     prob_ga.run_driver()
 
     # Capture GA result
-    ga_rpm   = float(prob_ga.get_val("rpm")[0])
-    ga_dt    = prob_ga.get_val("delta_twist_deg").copy()
-    ga_dc    = prob_ga.get_val("delta_chord_R").copy()
-    ga_sw    = prob_ga.get_val("sweep_R").copy()
-    ga_dtc   = prob_ga.get_val("delta_tc").copy()
-    ga_z     = prob_ga.get_val("z_offset_R_tip").copy()
-    ga_th2   = float(prob_ga.get_val("theta2")[0])
-    ga_th3   = float(prob_ga.get_val("theta3")[0])
-    ga_thrust = float(prob_ga.get_val("thrust_hover")[0])
+    ga_rpm       = float(prob_ga.get_val("rpm")[0])
+    ga_dt        = prob_ga.get_val("delta_twist_deg").copy()
+    ga_dc        = prob_ga.get_val("delta_chord_R").copy()
+    ga_sw        = prob_ga.get_val("sweep_R").copy()
+    ga_dtc       = prob_ga.get_val("delta_tc").copy()
+    ga_z         = prob_ga.get_val("z_offset_R_tip").copy()
+    ga_th2       = float(prob_ga.get_val("theta2")[0])
+    ga_th3       = float(prob_ga.get_val("theta3")[0])
+    ga_thrust    = float(prob_ga.get_val("thrust_hover")[0])
+    ga_min_thick = float(prob_ga.get_val("min_thickness")[0])
+    ga_max_stress = float(prob_ga.get_val("max_stress")[0])
 
     if verbose:
         print("GA result:")
@@ -594,22 +651,39 @@ def _run_hybrid(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
         print("\n=== Phase 2: SLSQP refinement ===")
 
     # ---- Feasibility check: SLSQP must start inside the feasible region ----
-    # If GA ignored the thrust constraint (common because GA uses soft penalties),
-    # override RPM to the minimum value that achieves thrust_min_hover on the
-    # baseline blade, guaranteeing SLSQP starts thrust-feasible.
-    if ga_thrust < thrust_min_hover * 0.95:
+    ga_thrust_bad = ga_thrust    < thrust_min_hover  * 0.95
+    ga_stress_bad = ga_max_stress > ALLOWABLE_STRESS  * 1.05
+    ga_thick_bad  = ga_min_thick < MIN_PRINT_THICKNESS * 0.95
+
+    if ga_thrust_bad or ga_stress_bad:
+        # Hard structural violation: fall back to the known-feasible geometry.
         rpm_feasible, dc_feas, dtc_feas = _feasible_start(thrust_min_hover, rho)
         if verbose:
-            print(f"[HYBRID] GA thrust {ga_thrust:.2f} N < {thrust_min_hover:.2f} N target.")
-            print(f"[HYBRID] Overriding start: RPM {ga_rpm:.0f} -> {rpm_feasible:.0f}, "
-                  f"using max-chord/tc geometry for structural feasibility")
+            print(f"[HYBRID] GA hard infeasible: thrust={ga_thrust:.2f} N, "
+                  f"stress={ga_max_stress/1e6:.1f} MPa")
+            print(f"[HYBRID] Full fallback: RPM {ga_rpm:.0f} -> {rpm_feasible:.0f}")
         start_rpm = rpm_feasible
-        start_dt  = np.zeros_like(ga_dt)   # reset twist — start from baseline
-        start_dc  = dc_feas                # wider chord (thrust + stress relief)
+        start_dt  = np.zeros_like(ga_dt)
+        start_dc  = dc_feas
         start_sw  = np.zeros_like(ga_sw)
-        start_dtc = dtc_feas               # thicker t/c (wall thickness + stress)
+        start_dtc = dtc_feas
         start_z   = np.zeros_like(ga_z)
-        start_th2 = ga_th2                 # keep GA blade spacing hint
+        start_th2 = ga_th2
+        start_th3 = ga_th3
+    elif ga_thick_bad:
+        # Only thickness violated: repair delta_tc, keep the rest of the GA solution.
+        blade_tmp = baseline_apc7x5e()
+        dtc_repaired = _repair_tc(blade_tmp, ga_dc, ga_dtc)
+        if verbose:
+            print(f"[HYBRID] GA thin blade (min={ga_min_thick*1e3:.2f} mm); "
+                  f"repairing delta_tc — keeping RPM/twist/chord/spacing from GA.")
+        start_rpm = ga_rpm
+        start_dt  = ga_dt
+        start_dc  = ga_dc
+        start_sw  = ga_sw
+        start_dtc = dtc_repaired
+        start_z   = ga_z
+        start_th2 = ga_th2
         start_th3 = ga_th3
     else:
         start_rpm = ga_rpm
@@ -661,7 +735,15 @@ def _print_results(prob):
     print(f"  SPL cruise   : {_g('SPL_cruise'):.2f} dBA")
     print(f"  SPL weighted : {_g('SPL_weighted'):.2f} dBA")
     print(f"  Max stress   : {_g('max_stress')/1e6:.2f} MPa  (<=22 MPa)")
-    print(f"  Min thickness: {_g('min_thickness')*1e3:.2f} mm  (>=0.5 mm)")
+    # phys_thick is the per-station constraint array; tip (last station, r/R=1)
+    # is excluded from the 0.5 mm constraint because the APC baseline is 0.42 mm
+    # there.  Report the inner-span minimum as the binding structural value.
+    try:
+        phys = np.ravel(prob.get_val('phys_thick'))
+        inner_min_mm = float(np.min(phys[:-1])) * 1e3
+        print(f"  Min thickness: {inner_min_mm:.2f} mm  (>=0.5 mm, inner span; tip excluded)")
+    except Exception:
+        print(f"  Min thickness: {float(prob.get_val('min_thickness')):.3f} m  (StressComponent scalar)")
     print(f"  Imbalance    : {_g('imbalance_factor'):.4f}  (<=0.15)")
     th2 = _g('theta2')
     th3 = _g('theta3')

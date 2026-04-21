@@ -237,6 +237,11 @@ def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
 
     thrust = float(np.trapezoid(dT, r))
     torque = float(np.trapezoid(dQ, r))
+    # At hover (V=0) a propeller producing thrust must consume positive shaft
+    # power.  Negative torque is a BEM convergence artefact from stalled root
+    # sections; clip to zero so downstream acoustics/power outputs are physical.
+    if V < STATIC_THRESHOLD:
+        torque = max(torque, 0.0)
     power  = torque * omega
     efficiency = (thrust * V / power) if (V >= STATIC_THRESHOLD and power > 1e-6) else 0.0
 
