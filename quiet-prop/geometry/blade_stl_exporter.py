@@ -390,12 +390,33 @@ if __name__ == "__main__":
     from geometry.blade_generator import baseline_apc7x5e
     from geometry.blade_importer import load_prop
 
-    blade_base = baseline_apc7x5e()
-    blade_ueq  = blade_base.set_blade_angles([0.0, 115.0, 235.0])
-
     out_dir = os.path.join(os.path.dirname(__file__), "..", "results", "stl")
+    os.makedirs(out_dir, exist_ok=True)
 
-    # ---- Baseline: APC 7x5E (3-blade) ----
+    # ---- Remove stale STL files from previous runs ----
+    stale = [
+        "rotor_HQProp_7x4x3_3blade.stl",
+        "rotor_baseline.stl",
+        "rotor_baseline_equal.stl",
+        "rotor_optimised.stl",
+        "rotor_optimised_equal.stl",
+        "blade_optimised_single.stl",
+        "rotor_apc7x5e_2blade.stl",
+        "rotor_APC_7x5E_2blade.stl",
+        "rotor_APC_7x4E_2blade.stl",
+        "rotor_APC_7x6E_2blade.stl",
+        "rotor_GWS_7x3.5_2blade.stl",
+        "blade_APC_7x5E_single.stl",
+    ]
+    for fname in stale:
+        path = os.path.join(out_dir, fname)
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"[STL] Removed stale: {fname}")
+
+    blade_base = baseline_apc7x5e()
+
+    # ---- Baseline: APC 7x5E (3-blade, equal spacing) ----
     print("\n--- Baseline APC 7x5E (3-blade) ---")
     export_blade_stl(blade_base,
                      os.path.join(out_dir, "blade_baseline_single.stl"))
@@ -409,10 +430,26 @@ if __name__ == "__main__":
         export_rotor_stl(blade_v,
                          os.path.join(out_dir, f"rotor_{name}_3blade.stl"))
 
-    # ---- Unequal spacing (Phase-2 example) ----
-    print("\n--- Unequal spacing 0/115/235 deg ---")
-    export_rotor_stl(blade_ueq,
-                     os.path.join(out_dir, "rotor_baseline_unequal.stl"))
+    # ---- Phase 2 optimised (9454 RPM, TWR 2.5, SPL_weighted 45.82 dBA) ----
+    # DVs from successful SLSQP run (Exit mode 0)
+    dtwist = np.array([-1.046, -5., -5., -4.684, -4.939, -4.936, -4.997,
+                       -3.131, -1.126, 0.784, 2.638, 4.501, 5., 5., 5., 5., 5., -4.986])
+    dchord = np.array([-0.03, -0.03, -0.03, -0.03, -0.03, 0.025, 0.025,
+                       -0.03, -0.03, -0.03, -0.03, -0.03, -0.03, -0.03,
+                       -0.0125, -0.0091, -0.0014, -0.0123])
+    dtc    = np.array([0.035]*17 + [0.04])
+
+    blade_opt = (blade_base
+                 .perturb_twist(dtwist)
+                 .perturb_chord(dchord)
+                 .perturb_tc(dtc)
+                 .set_blade_angles([0.0, 105.0, 253.1]))
+
+    print("\n--- Phase 2 optimised (0/105/253 deg) ---")
+    export_blade_stl(blade_opt,
+                     os.path.join(out_dir, "blade_optimised_phase2_single.stl"))
+    export_rotor_stl(blade_opt,
+                     os.path.join(out_dir, "rotor_optimised_phase2.stl"))
 
     print("\nAll STL files written to:", os.path.abspath(out_dir))
     print("Open any .stl in Windows 3D Viewer (double-click) to inspect.")
