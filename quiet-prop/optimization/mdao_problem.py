@@ -4,26 +4,26 @@ OpenMDAO MDAO problem – Phase 2.
 Drone sizing basis (7-inch UAV, 4-rotor)
 -----------------------------------------
   Frame (ImpulseRC Apex 7 carbon)  : 120 g
-  Motors x4 (2306 1750KV)          : 168 g
+  Motors x4 (2814 900KV)           : 272 g   (4 × 68 g, iFlight XING-E 2814)
   ESC 4-in-1 45A                   :  30 g
   Flight controller                :  20 g
-  Battery 4S 3300 mAh LiPo         : 235 g
+  Battery 4S 3300 mAh LiPo         : 335 g   (realistic measured weight)
   Props x4                         :  48 g
   FPV / DJI O3 Air Unit            :  55 g
   GPS + receiver + wiring          :  48 g
   ---------------------------------- -----
-  AUW                              : 724 g   -> W = 7.10 N
-  Per-prop weight at hover         :   1.78 N   (W/4)
+  AUW                              : 928 g   -> W = 9.10 N
+  Per-prop weight at hover         :   2.28 N   (W/4)
 
-Thrust targets derived from motor bench data
-(T-Motor F40 Pro IV 2306 1750KV, 7x4 prop, 4S battery):
-  Hover    (1g, ~40% throttle) :  1.78 N @ ~5,800 RPM
-  Maneuver (TWR 2.5, ~80% thr) :  4.44 N @ ~9,200 RPM   <- hover constraint
+Thrust targets (BEM-derived, iFlight XING-E 2814 900KV on 4S):
+  900 KV × 14.8 V nominal = 13,320 RPM no-load; ~75% under load -> ~10,000 RPM max
+  Hover    (1g, ~53% throttle) :  2.28 N @ ~7,000 RPM
+  Maneuver (TWR 2.5, ~85% thr) :  5.69 N @ ~9,500 RPM   <- hover constraint
   Cruise   (level flight 15m/s):  2.00 N                 <- cruise constraint
-  Full thr (TWR 3.5, 100%)     :  6.20 N @ ~10,400 RPM
+  Full thr (TWR ~3.1, 100%)    :  7.96 N @ ~10,000 RPM
 
 RPM design-variable bounds: [3500, 10000]
-RPM initial point: 6000 (midpoint between hover and maneuver operating range)
+RPM initial point: 7000 (estimated hover RPM for 928 g AUW)
 
 Fixes applied
 -------------
@@ -58,28 +58,28 @@ import openmdao.api as om
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from geometry.blade_generator import baseline_hqprop, BladeGeometry
+from geometry.blade_generator import baseline_apc7x5e, BladeGeometry
 from aerodynamics.ccblade_component import CCBladeComponent, bem_solve
 from acoustics.bpm_component import BPMComponent, bpm_noise
 from structures.structural_component import (StressComponent, ALLOWABLE_STRESS,
                                               MIN_PRINT_THICKNESS)
 
 N_STATIONS   = 20
-N_BLADE_STAT = 18          # blade definition stations (matches HQProp baseline)
+N_BLADE_STAT = 18          # blade definition stations (matches APC 7x5E baseline)
 N_TIP_ZONES  = 10          # dihedral design var stations (outer 55–100% span)
 CRUISE_VINF  = 15.0        # m/s forward cruise speed
 W_HOVER      = 0.7         # acoustic weight for hover
 W_CRUISE     = 0.3         # acoustic weight for cruise
 
 # ---------------------------------------------------------------------------
-# Drone sizing constants (7-inch 4-rotor UAV, 724 g AUW)
+# Drone sizing constants (7-inch 4-rotor UAV, 928 g AUW)
 # ---------------------------------------------------------------------------
-DRONE_AUW_KG        = 0.724    # kg  all-up weight
+DRONE_AUW_KG        = 0.928    # kg  all-up weight
 DRONE_N_ROTORS      = 4        # number of rotors
 DRONE_G             = 9.81     # m/s^2
 
 # Thrust per rotor at the TWR that allows dynamic maneuvering (TWR = 2.5).
-# Based on T-Motor F40 Pro IV 2306 1750KV bench data: 4.44 N requires ~9200 RPM.
+# iFlight XING-E 2814 900KV on 4S: ~10,000 RPM at full throttle.
 DRONE_TWR_MANEUVER  = 2.5
 THRUST_HOVER_MIN    = (DRONE_AUW_KG * DRONE_G * DRONE_TWR_MANEUVER
                        / DRONE_N_ROTORS)    # 4.44 N
@@ -87,10 +87,10 @@ THRUST_HOVER_MIN    = (DRONE_AUW_KG * DRONE_G * DRONE_TWR_MANEUVER
 # Level-flight cruise thrust per rotor at V=15 m/s (body pitched ~20 deg).
 THRUST_CRUISE_MIN   = 2.00     # N
 
-# RPM operating envelope (motor bench data, 7" prop on 4S)
-RPM_HOVER_INIT      = 6000.0   # RPM  mid-point between hover and maneuver
+# RPM operating envelope (900 KV motor on 4S, 7" prop)
+RPM_HOVER_INIT      = 7000.0   # RPM  estimated hover point for 928 g AUW
 RPM_LOWER           = 3500.0   # RPM  idle / low-throttle floor
-RPM_UPPER           = 10000.0  # RPM  full-throttle ceiling (~TWR 3.5)
+RPM_UPPER           = 10000.0  # RPM  full-throttle ceiling (900 KV on 4S under load)
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class GeometryFullComponent(om.ExplicitComponent):
         self.options.declare("n_stations", default=N_STATIONS)
 
     def setup(self):
-        blade = self.options["blade"] or baseline_hqprop()
+        blade = self.options["blade"] or baseline_apc7x5e()
         self._blade = blade
         N       = self.options["n_stations"]
         n_def   = N_BLADE_STAT
@@ -237,7 +237,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
                 -> balance
           -> obj (WeightedSPLComponent)
     """
-    blade   = baseline_hqprop()
+    blade   = baseline_apc7x5e()
     n_def   = N_BLADE_STAT
 
     prob  = om.Problem()
@@ -477,7 +477,7 @@ def _feasible_start(thrust_min, rho, rpm_lo=RPM_LOWER, rpm_hi=RPM_UPPER):
     define the starting geometry.
     """
     from aerodynamics.ccblade_component import bem_solve
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     n = len(blade.r_R)
     dc   = np.full(n, 0.025)   # +0.025 R chord -> stays within +0.03 bound
     dtc  = np.full(n, 0.035)   # +0.035 tc   -> stays within +0.04 bound

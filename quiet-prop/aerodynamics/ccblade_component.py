@@ -16,7 +16,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from geometry.blade_generator import baseline_hqprop
+from geometry.blade_generator import baseline_apc7x5e
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +268,7 @@ class CCBladeComponent(om.ExplicitComponent):
         self.options.declare("n_stations", default=20)
 
     def setup(self):
-        self._blade = self.options["blade"] or baseline_hqprop()
+        self._blade = self.options["blade"] or baseline_apc7x5e()
         N = self.options["n_stations"]
         _, chord0, twist0 = self._blade.get_stations(N)
 
@@ -313,7 +313,7 @@ class CCBladeComponent(om.ExplicitComponent):
 
 
 if __name__ == "__main__":
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     for rpm, v in [(5000, 0.0), (5000, 5.0), (7000, 0.0)]:
         res = bem_solve(blade, rpm=rpm, v_inf=v)
         print(f"RPM={rpm}, V={v}: T={res['thrust']:.3f}N  "

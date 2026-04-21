@@ -2,17 +2,17 @@
 Baseline validation suite — Phase 2 pipeline.
 
 Tests cover:
-  1. BEM static thrust at hover RPM (6000)
+  1. BEM static thrust at hover RPM (7000)
   2. BEM forward flight at cruise speed (15 m/s)
   3. BPM noise with Michel transition (LBL-VS active at Re~1e5)
   4. Structural stress and wall thickness
   5. OpenMDAO component wiring (geom -> aero -> acoustics -> stress)
-  6. Drone thrust targets (724 g AUW, TWR 2.5 at 9220 RPM)
+  6. Drone thrust targets (928 g AUW, TWR 2.5 at 9500 RPM)
   7. Propeller catalogue (blade_importer)
 
-Published reference: UIUC Propeller Database, HQProp 7x4x3
-  Static CT ~ 0.09-0.14,  CP ~ 0.03-0.06
-  Static thrust at 5000 RPM (sea level) ~ 0.8-2.5 N
+Published reference: Brandt & Selig (2011) UIUC / AIAA 2011-1255, APC 7x5E
+  Static CT ~ 0.09-0.15,  CP ~ 0.03-0.07
+  Static thrust at 5000 RPM (sea level) ~ 1.0-3.0 N
 """
 
 import sys
@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from geometry.blade_generator import baseline_hqprop
+from geometry.blade_generator import baseline_apc7x5e
 from geometry.blade_importer import load_prop, list_catalog
 from aerodynamics.ccblade_component import bem_solve, CCBladeComponent
 from acoustics.bpm_component import bpm_noise, BPMComponent
@@ -44,8 +44,8 @@ def _check(name, value, lo, hi, units=""):
 # Test 1: BEM static thrust at hover operating RPM
 # ---------------------------------------------------------------------------
 def test_bem_static():
-    print("\n--- Test 1: BEM static (6000 RPM, V=0) ---")
-    blade = baseline_hqprop()
+    print(f"\n--- Test 1: BEM static ({RPM_HOVER_INIT:.0f} RPM, V=0) ---")
+    blade = baseline_apc7x5e()
     res   = bem_solve(blade, rpm=RPM_HOVER_INIT, v_inf=0.0, rho=1.225)
 
     ok  = _check("Thrust (N)",    res["thrust"],                   0.5,  5.0,  "N")
@@ -65,7 +65,7 @@ def test_bem_static():
 # ---------------------------------------------------------------------------
 def test_bem_forward():
     print(f"\n--- Test 2: BEM forward flight (6000 RPM, 15 m/s) ---")
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     res   = bem_solve(blade, rpm=RPM_HOVER_INIT, v_inf=15.0, rho=1.225)
 
     # At V=15 m/s advance ratio J~1, thrust can go slightly negative
@@ -81,7 +81,7 @@ def test_bem_forward():
 # ---------------------------------------------------------------------------
 def test_bpm_noise():
     print("\n--- Test 3: BPM noise with Michel transition (6000 RPM, V=0) ---")
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     aero  = bem_solve(blade, rpm=RPM_HOVER_INIT, v_inf=0.0, rho=1.225)
     _, chord_m, _ = blade.get_stations(20)
 
@@ -108,7 +108,7 @@ def test_bpm_noise():
 # ---------------------------------------------------------------------------
 def test_structural():
     print("\n--- Test 4: Structural stress (6000 RPM, baseline blade) ---")
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     r_m, chord_m, _ = blade.get_stations(20)
     _, _, _, tc, _, _ = blade.get_full_stations(20)
 
@@ -134,7 +134,7 @@ def test_structural():
 # ---------------------------------------------------------------------------
 def test_openmdao_components():
     print("\n--- Test 5: OpenMDAO component wiring ---")
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
 
     prob  = om.Problem()
     model = prob.model
@@ -179,23 +179,23 @@ def test_openmdao_components():
 # Test 6: Drone thrust targets
 # ---------------------------------------------------------------------------
 def test_drone_targets():
-    print("\n--- Test 6: Drone thrust targets (724 g drone, TWR 2.5) ---")
-    blade = baseline_hqprop()
+    print(f"\n--- Test 6: Drone thrust targets ({DRONE_AUW_KG*1000:.0f} g drone, TWR 2.5) ---")
+    blade = baseline_apc7x5e()
     g = 9.81
     W = DRONE_AUW_KG * g
 
-    ok  = _check("Drone weight (N)",         W,                 5.0,  10.0, "N")
-    ok &= _check("Hover thrust target (N)",  THRUST_HOVER_MIN,  3.0,   6.0, "N")
+    ok  = _check("Drone weight (N)",         W,                 7.0,  12.0, "N")
+    ok &= _check("Hover thrust target (N)",  THRUST_HOVER_MIN,  4.0,   7.0, "N")
     ok &= _check("Cruise thrust target (N)", THRUST_CRUISE_MIN, 1.0,   4.0, "N")
-    ok &= _check("RPM hover init",           RPM_HOVER_INIT,  4000.0, 8000.0, "RPM")
+    ok &= _check("RPM hover init",           RPM_HOVER_INIT,  5000.0, 9000.0, "RPM")
 
     # Confirm strong-blade starting point achieves thrust at feasible RPM
     dc  = np.full(len(blade.r_R), 0.025)
     dtc = np.full(len(blade.r_R), 0.035)
     blade_strong = blade.perturb_chord(dc).perturb_tc(dtc)
-    res = bem_solve(blade_strong, rpm=9220, v_inf=0.0, rho=1.225)
-    ok &= _check("Strong blade thrust @9220 RPM (N)",
-                 res["thrust"], THRUST_HOVER_MIN * 0.9, 8.0, "N")
+    res = bem_solve(blade_strong, rpm=9500, v_inf=0.0, rho=1.225)
+    ok &= _check("Strong blade thrust @9500 RPM (N)",
+                 res["thrust"], THRUST_HOVER_MIN * 0.9, 12.0, "N")
 
     print(f"  AUW={DRONE_AUW_KG*1000:.0f} g  W={W:.2f} N  "
           f"T_hover_min={THRUST_HOVER_MIN:.2f} N  "

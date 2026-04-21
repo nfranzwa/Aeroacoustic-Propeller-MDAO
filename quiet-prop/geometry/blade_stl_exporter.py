@@ -10,7 +10,7 @@ Generates a parametric 3D propeller blade with:
 Usage
 -----
     from geometry.blade_stl_exporter import export_blade_stl, export_rotor_stl
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     export_rotor_stl(blade, "rotor.stl", n_sections=18, n_airfoil=40)
 """
 
@@ -387,38 +387,25 @@ def _export_fallback_csv(blade, stl_path, n_sections, n_airfoil):
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from geometry.blade_generator import baseline_hqprop
+    from geometry.blade_generator import baseline_apc7x5e, baseline_hqprop
 
-    # Phase-1 optimised deltas (from prior optimization run)
-    DELTA_TWIST_P1 = np.array([
-        -0.643, -3.712, -4.403, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0,
-        -5.0, -4.727, -4.276, -3.298, -2.644, -1.856, -1.153, 1.004, 0.106])
-    DELTA_CHORD_P1 = np.array([
-        -0.03,  0.03,  0.03,  0.03,  0.03,  0.03,  0.03,
-         0.03,  0.03,  0.03,  0.03,  0.03,  0.03,  0.03,
-         0.03,  0.03,  0.03,  0.0292])
-
-    blade_base = baseline_hqprop()
-    blade_opt  = (blade_base
-                  .perturb_twist(DELTA_TWIST_P1)
-                  .perturb_chord(DELTA_CHORD_P1))
+    blade_base = baseline_apc7x5e()
     blade_ueq  = blade_base.set_blade_angles([0.0, 115.0, 235.0])
 
     out_dir = os.path.join(os.path.dirname(__file__), "..", "results", "stl")
 
-    # ---- Baseline ----
-    print("\n--- Baseline HQProp 7x4x3 ---")
+    # ---- Baseline: APC 7x5E (3-blade) ----
+    print("\n--- Baseline APC 7x5E (3-blade) ---")
     export_blade_stl(blade_base,
                      os.path.join(out_dir, "blade_baseline_single.stl"))
     export_rotor_stl(blade_base,
-                     os.path.join(out_dir, "rotor_baseline_equal.stl"))
+                     os.path.join(out_dir, "rotor_APC_7x5E_3blade.stl"))
 
-    # ---- Phase-1 optimised (for comparison) ----
-    print("\n--- Phase-1 Optimised (quieter) ---")
-    export_blade_stl(blade_opt,
-                     os.path.join(out_dir, "blade_optimised_single.stl"))
-    export_rotor_stl(blade_opt,
-                     os.path.join(out_dir, "rotor_optimised_equal.stl"))
+    # ---- HQProp reference ----
+    blade_hqprop = baseline_hqprop()
+    print("\n--- HQProp 7x4x3 reference ---")
+    export_rotor_stl(blade_hqprop,
+                     os.path.join(out_dir, "rotor_HQProp_7x4x3_3blade.stl"))
 
     # ---- Unequal spacing (Phase-2 example) ----
     print("\n--- Unequal spacing 0/115/235 deg ---")

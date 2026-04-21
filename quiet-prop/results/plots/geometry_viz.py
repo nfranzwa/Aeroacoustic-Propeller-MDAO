@@ -8,6 +8,8 @@ Comprehensive blade geometry visualization – Phase 2.
   4. Twist distribution
   5. t/c ratio + physical wall thickness
   6. Aft-sweep and dihedral offsets
+
+Baseline: APC 7x5E (3-blade). Optional second blade shown in green.
 """
 
 import numpy as np
@@ -18,16 +20,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from geometry.blade_generator import baseline_hqprop
-
-# Phase-1 optimised deltas
-DELTA_TWIST_P1 = np.array([
-    -0.643, -3.712, -4.403, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0,
-    -5.0, -4.727, -4.276, -3.298, -2.644, -1.856, -1.153, 1.004, 0.106])
-DELTA_CHORD_P1 = np.array([
-    -0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03,
-     0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03,
-     0.03, 0.03, 0.03, 0.0292])
+from geometry.blade_generator import baseline_apc7x5e, baseline_hqprop
 
 BG = "#0d1117"; BLUE = "#58a6ff"; GREEN = "#3fb950"
 ORANGE = "#f0883e"; PURPLE = "#d2a8ff"; SUBTLE = "#30363d"
@@ -89,7 +82,9 @@ def _setup_ax(ax, title, xlabel, ylabel):
 
 def plot_geometry(blade_base, blade_opt=None, save_path=None, show=False):
     blades  = [blade_base] + ([blade_opt] if blade_opt else [])
-    labels  = ["Baseline"] + (["Optimised"] if blade_opt else [])
+    lbl0    = getattr(blade_base, "_label", None) or "APC 7x5E (3-blade)"
+    lbl1    = getattr(blade_opt,  "_label", None) or "Reference" if blade_opt else None
+    labels  = [lbl0] + ([lbl1] if blade_opt else [])
     colours = [BLUE]       + ([GREEN]       if blade_opt else [])
 
     fig = plt.figure(figsize=(18, 11), facecolor=BG)
@@ -217,21 +212,25 @@ def plot_geometry(blade_base, blade_opt=None, save_path=None, show=False):
 
 
 if __name__ == "__main__":
-    blade_base = baseline_hqprop()
-    blade_p1   = (blade_base
-                  .perturb_twist(DELTA_TWIST_P1)
-                  .perturb_chord(DELTA_CHORD_P1))
+    blade_apc   = baseline_apc7x5e()
+    blade_hqprop = baseline_hqprop()
 
     out_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Baseline vs Phase-1 optimised
-    plot_geometry(blade_base, blade_p1,
+    # APC 7x5E baseline geometry only
+    plot_geometry(blade_apc,
                   save_path=os.path.join(out_dir, "blade_geometry.png"))
 
-    # Baseline vs unequal-spacing example (Phase-2 preview)
-    blade_unequal = blade_base.set_blade_angles([0.0, 115.0, 235.0])
-    plot_geometry(blade_base, blade_unequal,
+    # APC 7x5E (baseline) vs HQProp 7x4x3 (reference)
+    plot_geometry(blade_apc, blade_hqprop,
+                  save_path=os.path.join(out_dir, "apc7x5e_vs_hqprop.png"))
+
+    # APC 7x5E unequal-spacing preview (Phase-2)
+    blade_unequal = blade_apc.set_blade_angles([0.0, 115.0, 235.0])
+    plot_geometry(blade_apc, blade_unequal,
                   save_path=os.path.join(out_dir, "blade_geometry_unequal.png"))
 
-    print("\nBaseline summary:")
-    blade_base.summary()
+    print("\nAPC 7x5E (3-blade) baseline summary:")
+    blade_apc.summary()
+    print("\nHQProp 7x4x3 reference summary:")
+    blade_hqprop.summary()

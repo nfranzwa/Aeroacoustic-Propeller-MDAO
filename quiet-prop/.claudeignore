@@ -1,0 +1,20 @@
+# Compiled Python — never need to read bytecode
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Binary 3D model outputs — unreadable and large
+results/stl/
+
+# Rendered plot images — Claude can't parse pixels for code context
+results/plots/*.png
+
+# OpenMDAO solver run artefacts — HTML reports, N2 diagrams, logs
+mdao_problem_out/
+problem_out/
+problem2_out/
+test_baseline_out/
+results/optimization_run.log
+
+# Section geometry CSVs — generated output, not source
+results/stl/*.csv

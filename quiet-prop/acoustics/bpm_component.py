@@ -15,7 +15,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from geometry.blade_generator import baseline_hqprop
+from geometry.blade_generator import baseline_apc7x5e
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -327,7 +327,7 @@ class BPMComponent(om.ExplicitComponent):
         self.options.declare("r_obs",      default=1.0)
 
     def setup(self):
-        self._blade = self.options["blade"] or baseline_hqprop()
+        self._blade = self.options["blade"] or baseline_apc7x5e()
         N      = self.options["n_stations"]
         n_freq = len(THIRD_OCT_FREQS)
         B      = self._blade.num_blades
@@ -384,7 +384,7 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from aerodynamics.ccblade_component import bem_solve
 
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     aero  = bem_solve(blade, rpm=5000, v_inf=0.0)
     _, chord_m, _ = blade.get_stations(20)
 

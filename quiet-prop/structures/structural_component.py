@@ -106,8 +106,8 @@ class StressComponent(om.ExplicitComponent):
         self.options.declare("num_blades", default=3)
 
     def setup(self):
-        from geometry.blade_generator import baseline_hqprop
-        blade = self.options["blade"] or baseline_hqprop()
+        from geometry.blade_generator import baseline_apc7x5e
+        blade = self.options["blade"] or baseline_apc7x5e()
         self._blade = blade
         N = self.options["n_stations"]
         _, chord0, _ = blade.get_stations(N)
@@ -141,9 +141,9 @@ class StressComponent(om.ExplicitComponent):
 if __name__ == "__main__":
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from geometry.blade_generator import baseline_hqprop
+    from geometry.blade_generator import baseline_apc7x5e
 
-    blade = baseline_hqprop()
+    blade = baseline_apc7x5e()
     r_m, chord_m, _ = blade.get_stations(20)
     _, _, _, tc, _, _ = blade.get_full_stations(20)
 
