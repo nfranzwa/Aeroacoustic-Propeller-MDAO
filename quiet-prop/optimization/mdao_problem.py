@@ -353,7 +353,6 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
             "chord_m",
             ("v_rel",            "v_rel_hover"),
             ("aoa_deg",          "aoa_deg_hover"),
-            ("cl",               "cl_hover"),
             ("x_tr_c",           "x_tr_c_hover"),
             ("thrust",           "thrust_hover"),
             ("torque",           "torque_hover"),
@@ -395,7 +394,6 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
             "chord_m",
             ("v_rel",            "v_rel_cruise"),
             ("aoa_deg",          "aoa_deg_cruise"),
-            ("cl",               "cl_cruise"),
             ("x_tr_c",           "x_tr_c_cruise"),
             ("thrust",           "thrust_cruise"),
             ("torque",           "torque_cruise"),
@@ -594,7 +592,6 @@ def _feasible_start(thrust_min, rho, rpm_lo=RPM_LOWER, rpm_hi=RPM_UPPER):
     Returns (rpm, dc_R, dtc) where dc_R and dtc are the DV arrays that
     define the starting geometry.
     """
-    from aerodynamics.ccblade_component import bem_solve
     blade = baseline_apc7x5e()
     n = len(blade.r_R)
     dc   = np.full(n, 0.025)   # +0.025 R chord -> stays within +0.03 bound
@@ -744,7 +741,7 @@ def _print_results(prob):
         print(f"  Min thickness: {inner_min_mm:.2f} mm  (>=0.5 mm, inner span; tip excluded)")
     except Exception:
         print(f"  Min thickness: {float(prob.get_val('min_thickness')):.3f} m  (StressComponent scalar)")
-    print(f"  Imbalance    : {_g('imbalance_factor'):.4f}  (<=0.15)")
+    print(f"  Imbalance    : {_g('imbalance_factor'):.4f}  (<=0.05)")
     th2 = _g('theta2')
     th3 = _g('theta3')
     print(f"  Blade angles : 0 / {th2:.1f} / {th3:.1f} deg")

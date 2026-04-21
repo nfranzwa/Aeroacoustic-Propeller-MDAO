@@ -80,23 +80,23 @@ def test_bem_forward():
 # Test 3: BPM noise with Michel transition (Phase 2 model)
 # ---------------------------------------------------------------------------
 def test_bpm_noise():
-    print("\n--- Test 3: BPM noise with Michel transition (6000 RPM, V=0) ---")
+    print(f"\n--- Test 3: BPM noise with Michel transition ({RPM_HOVER_INIT:.0f} RPM, V=0) ---")
     blade = baseline_apc7x5e()
     aero  = bem_solve(blade, rpm=RPM_HOVER_INIT, v_inf=0.0, rho=1.225)
     _, chord_m, _ = blade.get_stations(20)
 
     res = bpm_noise(
         r_m=aero["r"], chord_m=chord_m,
-        v_rel=aero["v_rel"], aoa_deg=aero["aoa_deg"], cl=aero["cl"],
+        v_rel=aero["v_rel"], aoa_deg=aero["aoa_deg"],
         thrust=aero["thrust"], torque=aero["torque"],
         rpm=RPM_HOVER_INIT, num_blades=blade.num_blades, radius_m=blade.radius_m,
         x_tr_c=aero["x_tr_c"],
     )
 
-    # LBL-VS is active at Re~1e5 (x_tr_c~1.0), raises SPL to 30-45 dBA range
-    ok  = _check("SPL total (dBA)",    res["SPL_total"],     20.0, 60.0, "dBA")
-    ok &= _check("SPL tonal (dB)",     res["SPL_tonal"],    -20.0, 60.0, "dB")
-    ok &= _check("SPL broadband (dB)", res["SPL_broadband"], 20.0, 60.0, "dB")
+    # Amiet LETI dominates; total SPL should be in the 60-70 dBA range matching real drone measurements
+    ok  = _check("SPL total (dBA)",    res["SPL_total"],     55.0, 80.0, "dBA")
+    ok &= _check("SPL tonal (dB)",     res["SPL_tonal"],    -20.0, 80.0, "dB")
+    ok &= _check("SPL broadband (dB)", res["SPL_broadband"], 55.0, 80.0, "dB")
 
     print(f"  SPL total={res['SPL_total']:.1f} dBA  "
           f"tonal={res['SPL_tonal']:.1f} dB  broadband={res['SPL_broadband']:.1f} dB")
@@ -152,7 +152,7 @@ def test_openmdao_components():
     model.add_subsystem(
         "acoustics",
         BPMComponent(blade=blade, n_stations=20, r_obs=1.0),
-        promotes_inputs=["r_m", "v_rel", "aoa_deg", "cl", "x_tr_c",
+        promotes_inputs=["r_m", "v_rel", "aoa_deg", "x_tr_c",
                          "thrust", "torque", "rpm", "rho"],
         promotes_outputs=["SPL_total", "SPL_broadband", "SPL_tonal",
                           "SPL_spectrum", "freq"],
@@ -168,7 +168,7 @@ def test_openmdao_components():
     x_tr   = float(np.mean(prob.get_val("x_tr_c")))
 
     ok  = _check("OM thrust (N)",      thrust, 0.5, 5.0,  "N")
-    ok &= _check("OM SPL_total (dBA)", spl,   20.0, 60.0, "dBA")
+    ok &= _check("OM SPL_total (dBA)", spl,   55.0, 80.0, "dBA")
     ok &= _check("OM x_tr_c (mean)",   x_tr,   0.0,  1.0)
 
     print(f"  Thrust={thrust:.3f} N  SPL={spl:.1f} dBA  x_tr_c={x_tr:.3f}")
@@ -185,7 +185,7 @@ def test_drone_targets():
     W = DRONE_AUW_KG * g
 
     ok  = _check("Drone weight (N)",         W,                 7.0,  12.0, "N")
-    ok &= _check("Hover thrust target (N)",  THRUST_HOVER_MIN,  4.0,   7.0, "N")
+    ok &= _check("Hover thrust target (N)",  THRUST_HOVER_MIN,  1.5,   3.5, "N")
     ok &= _check("Cruise thrust target (N)", THRUST_CRUISE_MIN, 2.0,   3.0, "N")
     ok &= _check("RPM hover init",           RPM_HOVER_INIT,  5000.0, 9000.0, "RPM")
 
