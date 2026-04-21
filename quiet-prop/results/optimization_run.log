@@ -1,0 +1,52 @@
+
+=== Phase 1: GA global search (pop=50, gen=30) ===
+GA result:
+  RPM          : 5520
+  Thrust hover : 1.163 N
+  Thrust cruise: -0.355 N
+  Power hover  : 4.66 W
+  SPL hover    : 29.81 dBA
+  SPL cruise   : 29.90 dBA
+  SPL weighted : 29.84 dBA
+  Max stress   : 21.65 MPa  (<=22 MPa)
+  Min thickness: 0.05 mm  (>=0.5 mm)
+  Imbalance    : 0.0697  (<=0.15)
+  Blade angles : 0 / 108.0 / 240.0 deg
+
+=== Phase 2: SLSQP refinement ===
+[HYBRID] GA thrust 1.16 N < 4.44 N target.
+[HYBRID] Overriding start: RPM 5520 -> 9220, using max-chord/tc geometry for structural feasibility
+C:\Users\nfran\AppData\Roaming\Python\Python314\site-packages\openmdao\core\total_jac.py:1696: DerivativesWarning:The following design variables have no impact on the constraints or objective at the current design point:
+  sweep_R, inds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+  z_offset_R_tip, inds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+Positive directional derivative for linesearch    (Exit mode 8)
+            Current function value: 39.82685379805419
+            Iterations: 32
+            Function evaluations: 136
+            Gradient evaluations: 28
+Optimization FAILED.
+Positive directional derivative for linesearch
+-----------------------------------
+
+=== Final Optimised Result ===
+  RPM          : 9221
+  Thrust hover : 4.370 N
+  Thrust cruise: 1.638 N
+  Power hover  : 31.59 W
+  SPL hover    : 42.22 dBA
+  SPL cruise   : 34.24 dBA
+  SPL weighted : 39.83 dBA
+  Max stress   : 21.61 MPa  (<=22 MPa)
+  Min thickness: 0.50 mm  (>=0.5 mm)
+  Imbalance    : 0.1500  (<=0.15)
+  Blade angles : 0 / 106.1 / 254.2 deg
+
+  dtwist (deg)    : [-0.321 -3.352 -4.539 -3.905  0.239  3.743  4.99   5.     5.     5.
+  5.     5.     5.     5.     5.     5.     5.     1.31 ]
+  dchord (R)      : [-0.0196 -0.03   -0.03   -0.03   -0.03   -0.03   -0.03   -0.03   -0.03
+ -0.03   -0.03   -0.03   -0.03   -0.03   -0.03   -0.03   -0.0122  0.007 ]
+  sweep (R)       : [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
+  delta_tc        : [0.04   0.0294 0.04   0.04   0.04   0.04   0.04   0.04   0.04   0.04
+ 0.04   0.04   0.04   0.04   0.0128 0.04   0.04   0.04  ]
+  z_offset_R_tip  : [0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]

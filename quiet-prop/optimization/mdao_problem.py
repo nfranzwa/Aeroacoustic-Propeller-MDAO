@@ -1,6 +1,30 @@
 """
 OpenMDAO MDAO problem – Phase 2.
 
+Drone sizing basis (7-inch UAV, 4-rotor)
+-----------------------------------------
+  Frame (ImpulseRC Apex 7 carbon)  : 120 g
+  Motors x4 (2306 1750KV)          : 168 g
+  ESC 4-in-1 45A                   :  30 g
+  Flight controller                :  20 g
+  Battery 4S 3300 mAh LiPo         : 235 g
+  Props x4                         :  48 g
+  FPV / DJI O3 Air Unit            :  55 g
+  GPS + receiver + wiring          :  48 g
+  ---------------------------------- -----
+  AUW                              : 724 g   -> W = 7.10 N
+  Per-prop weight at hover         :   1.78 N   (W/4)
+
+Thrust targets derived from motor bench data
+(T-Motor F40 Pro IV 2306 1750KV, 7x4 prop, 4S battery):
+  Hover    (1g, ~40% throttle) :  1.78 N @ ~5,800 RPM
+  Maneuver (TWR 2.5, ~80% thr) :  4.44 N @ ~9,200 RPM   <- hover constraint
+  Cruise   (level flight 15m/s):  2.00 N                 <- cruise constraint
+  Full thr (TWR 3.5, 100%)     :  6.20 N @ ~10,400 RPM
+
+RPM design-variable bounds: [3500, 10000]
+RPM initial point: 6000 (midpoint between hover and maneuver operating range)
+
 Fixes applied
 -------------
 1. Boundary-layer transition: Michel's criterion feeds x_tr_c into BPM,
@@ -46,6 +70,27 @@ N_TIP_ZONES  = 10          # dihedral design var stations (outer 55–100% span)
 CRUISE_VINF  = 15.0        # m/s forward cruise speed
 W_HOVER      = 0.7         # acoustic weight for hover
 W_CRUISE     = 0.3         # acoustic weight for cruise
+
+# ---------------------------------------------------------------------------
+# Drone sizing constants (7-inch 4-rotor UAV, 724 g AUW)
+# ---------------------------------------------------------------------------
+DRONE_AUW_KG        = 0.724    # kg  all-up weight
+DRONE_N_ROTORS      = 4        # number of rotors
+DRONE_G             = 9.81     # m/s^2
+
+# Thrust per rotor at the TWR that allows dynamic maneuvering (TWR = 2.5).
+# Based on T-Motor F40 Pro IV 2306 1750KV bench data: 4.44 N requires ~9200 RPM.
+DRONE_TWR_MANEUVER  = 2.5
+THRUST_HOVER_MIN    = (DRONE_AUW_KG * DRONE_G * DRONE_TWR_MANEUVER
+                       / DRONE_N_ROTORS)    # 4.44 N
+
+# Level-flight cruise thrust per rotor at V=15 m/s (body pitched ~20 deg).
+THRUST_CRUISE_MIN   = 2.00     # N
+
+# RPM operating envelope (motor bench data, 7" prop on 4S)
+RPM_HOVER_INIT      = 6000.0   # RPM  mid-point between hover and maneuver
+RPM_LOWER           = 3500.0   # RPM  idle / low-throttle floor
+RPM_UPPER           = 10000.0  # RPM  full-throttle ceiling (~TWR 3.5)
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +223,9 @@ class BalanceComponent(om.ExplicitComponent):
 # Problem builder
 # ---------------------------------------------------------------------------
 
-def build_problem(thrust_min_hover=1.0, thrust_min_cruise=0.5,
-                  rpm_init=5000.0, rho=1.225, max_imbalance=0.15):
+def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
+                  thrust_min_cruise=THRUST_CRUISE_MIN,
+                  rpm_init=RPM_HOVER_INIT, rho=1.225, max_imbalance=0.15):
     """
     Assemble and return the full Phase-2 OpenMDAO Problem.
 
@@ -343,7 +389,7 @@ def build_problem(thrust_min_hover=1.0, thrust_min_cruise=0.5,
     prob.driver.options["maxiter"]   = 500
 
     # ---- Design variables ------------------------------------------------
-    prob.model.add_design_var("rpm",             lower=2000.0,  upper=8000.0,  units="rpm")
+    prob.model.add_design_var("rpm",             lower=RPM_LOWER, upper=RPM_UPPER, units="rpm")
     prob.model.add_design_var("delta_twist_deg", lower=-5.0,    upper=5.0)
     prob.model.add_design_var("delta_chord_R",   lower=-0.03,   upper=0.03)
     prob.model.add_design_var("sweep_R",         lower=0.0,     upper=0.12)
@@ -369,7 +415,7 @@ def build_problem(thrust_min_hover=1.0, thrust_min_cruise=0.5,
 # Run helpers
 # ---------------------------------------------------------------------------
 
-def run_baseline(rpm=5000.0, rho=1.225, verbose=True):
+def run_baseline(rpm=RPM_HOVER_INIT, rho=1.225, verbose=True):
     """Run baseline analysis (no optimisation)."""
     prob = build_problem(rpm_init=rpm, rho=rho)
     prob.setup()
@@ -380,8 +426,9 @@ def run_baseline(rpm=5000.0, rho=1.225, verbose=True):
     return prob
 
 
-def run_optimization(thrust_min_hover=1.0, thrust_min_cruise=0.5,
-                     rpm_init=5000.0, rho=1.225, verbose=True,
+def run_optimization(thrust_min_hover=THRUST_HOVER_MIN,
+                     thrust_min_cruise=THRUST_CRUISE_MIN,
+                     rpm_init=RPM_HOVER_INIT, rho=1.225, verbose=True,
                      use_hybrid=True):
     """
     Run the full MDAO optimisation.
@@ -415,6 +462,39 @@ def _run_slsqp(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
     return prob
 
 
+def _feasible_start(thrust_min, rho, rpm_lo=RPM_LOWER, rpm_hi=RPM_UPPER):
+    """
+    Find a thrust- and structure-feasible starting point for SLSQP when the
+    GA result is infeasible.
+
+    Strategy: use the structurally-strongest blade within DV bounds
+    (max chord +0.03, max t/c +0.04). This geometry:
+      - Achieves thrust_min at lower RPM (wider blade = more lift per rev)
+      - Has larger cross-sectional area -> lower centrifugal stress
+      - Has greater physical thickness -> satisfies min-wall constraint
+
+    Returns (rpm, dc_R, dtc) where dc_R and dtc are the DV arrays that
+    define the starting geometry.
+    """
+    from aerodynamics.ccblade_component import bem_solve
+    blade = baseline_hqprop()
+    n = len(blade.r_R)
+    dc   = np.full(n, 0.025)   # +0.025 R chord -> stays within +0.03 bound
+    dtc  = np.full(n, 0.035)   # +0.035 tc   -> stays within +0.04 bound
+    blade_strong = blade.perturb_chord(dc).perturb_tc(dtc)
+
+    lo, hi = rpm_lo, rpm_hi
+    for _ in range(20):          # ~20 bisection steps => 1 RPM accuracy
+        mid = 0.5 * (lo + hi)
+        res = bem_solve(blade_strong, mid, v_inf=0.0, rho=rho,
+                        n_stations=N_STATIONS)
+        if res["thrust"] >= thrust_min:
+            hi = mid
+        else:
+            lo = mid
+    return float(hi), dc, dtc
+
+
 def _run_hybrid(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
     """GA global search -> SLSQP local refinement."""
 
@@ -442,27 +522,55 @@ def _run_hybrid(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
     ga_z     = prob_ga.get_val("z_offset_R_tip").copy()
     ga_th2   = float(prob_ga.get_val("theta2")[0])
     ga_th3   = float(prob_ga.get_val("theta3")[0])
+    ga_thrust = float(prob_ga.get_val("thrust_hover")[0])
 
     if verbose:
         print("GA result:")
         _print_results(prob_ga)
         print("\n=== Phase 2: SLSQP refinement ===")
 
+    # ---- Feasibility check: SLSQP must start inside the feasible region ----
+    # If GA ignored the thrust constraint (common because GA uses soft penalties),
+    # override RPM to the minimum value that achieves thrust_min_hover on the
+    # baseline blade, guaranteeing SLSQP starts thrust-feasible.
+    if ga_thrust < thrust_min_hover * 0.95:
+        rpm_feasible, dc_feas, dtc_feas = _feasible_start(thrust_min_hover, rho)
+        if verbose:
+            print(f"[HYBRID] GA thrust {ga_thrust:.2f} N < {thrust_min_hover:.2f} N target.")
+            print(f"[HYBRID] Overriding start: RPM {ga_rpm:.0f} -> {rpm_feasible:.0f}, "
+                  f"using max-chord/tc geometry for structural feasibility")
+        start_rpm = rpm_feasible
+        start_dt  = np.zeros_like(ga_dt)   # reset twist — start from baseline
+        start_dc  = dc_feas                # wider chord (thrust + stress relief)
+        start_sw  = np.zeros_like(ga_sw)
+        start_dtc = dtc_feas               # thicker t/c (wall thickness + stress)
+        start_z   = np.zeros_like(ga_z)
+        start_th2 = ga_th2                 # keep GA blade spacing hint
+        start_th3 = ga_th3
+    else:
+        start_rpm = ga_rpm
+        start_dt  = ga_dt
+        start_dc  = ga_dc
+        start_sw  = ga_sw
+        start_dtc = ga_dtc
+        start_z   = ga_z
+        start_th2 = ga_th2
+        start_th3 = ga_th3
+
     # ---- Phase 2: SLSQP local refinement ----------------------------------
     prob = build_problem(thrust_min_hover=thrust_min_hover,
                          thrust_min_cruise=thrust_min_cruise,
-                         rpm_init=rpm_init, rho=rho)
+                         rpm_init=start_rpm, rho=rho)
     prob.setup()
 
-    # Warm-start from GA best
-    prob.set_val("rpm",             ga_rpm)
-    prob.set_val("delta_twist_deg", ga_dt)
-    prob.set_val("delta_chord_R",   ga_dc)
-    prob.set_val("sweep_R",         ga_sw)
-    prob.set_val("delta_tc",        ga_dtc)
-    prob.set_val("z_offset_R_tip",  ga_z)
-    prob.set_val("theta2",          ga_th2)
-    prob.set_val("theta3",          ga_th3)
+    prob.set_val("rpm",             start_rpm)
+    prob.set_val("delta_twist_deg", start_dt)
+    prob.set_val("delta_chord_R",   start_dc)
+    prob.set_val("sweep_R",         start_sw)
+    prob.set_val("delta_tc",        start_dtc)
+    prob.set_val("z_offset_R_tip",  start_z)
+    prob.set_val("theta2",          start_th2)
+    prob.set_val("theta3",          start_th3)
 
     prob.run_driver()
 
@@ -511,9 +619,5 @@ def _print_design_vars(prob):
 
 
 if __name__ == "__main__":
-    prob = run_optimization(
-        thrust_min_hover=1.0,
-        thrust_min_cruise=0.5,
-        rpm_init=5000.0,
-        use_hybrid=True,
-    )
+    # Uses physics-based defaults: 724g drone, TWR 2.5, RPM 6000 initial
+    prob = run_optimization(use_hybrid=True)
