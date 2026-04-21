@@ -1,5 +1,5 @@
 """
-OpenMDAO MDAO problem – Phase 2.
+OpenMDAO MDAO problem – Phase 3.
 
 Drone sizing basis (7-inch UAV, 4-rotor)
 -----------------------------------------
@@ -44,8 +44,8 @@ Fixes applied
 2. Structural constraint: centrifugal + bending root stress <= 22 MPa;
    minimum wall thickness >= 0.5 mm.
 
-3. Hybrid optimizer: GA global search (pop=50, gen=30) -> SLSQP local
-   refinement to escape local minima in the 57-variable space.
+3. Hybrid optimizer: GA global search (pop=200, gen=50) -> SLSQP local
+   refinement to escape local minima in the 75-variable space.
 
 4. Multipoint evaluation: hover (V=0 m/s) + cruise (V_axial=3.32 m/s) with
    weighted objective 0.7·SPL_hover + 0.3·SPL_cruise.
@@ -60,7 +60,7 @@ New design variables (Phase 2)
   theta2           1  [105, 135]   deg  azimuthal position of blade 2
   theta3           1  [225, 255]   deg  azimuthal position of blade 3
 
-Total design variables: 1 + 18 + 18 + 18 + 18 + 10 + 1 + 1 = 85
+Active design variables: 1 + 18 + 18 + 18 + 18 + 1 + 1 = 75  (dihedral excluded)
 """
 
 import sys
@@ -359,6 +359,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
             ("rpm",              "rpm"),
             ("rho",              "rho"),
             "blade_angles_deg",
+            "sweep_m",
         ],
         promotes_outputs=[
             ("SPL_total",     "SPL_hover"),
@@ -400,6 +401,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
             ("rpm",              "rpm"),
             ("rho",              "rho"),
             "blade_angles_deg",
+            "sweep_m",
         ],
         promotes_outputs=[
             ("SPL_total",     "SPL_cruise"),
@@ -451,10 +453,8 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     # ---- Per-station physical thickness (chord × t/c) ----------------------
     # One constraint per station gives SLSQP gradient information on exactly
     # which stations are thin — much more tractable than a single min() scalar.
-    # sweep_R and z_offset_R_tip are NOT design variables: BEM and BPM both
-    # ignore 3D blade geometry, so they have zero gradient everywhere and
-    # degrade the SLSQP Jacobian rank.  Keep them in the IVC at their
-    # zero defaults but do not optimise over them.
+    # z_offset_R_tip is NOT a design variable: BEM ignores dihedral so gradient
+    # is zero; excluding it preserves Jacobian rank.
     model.add_subsystem(
         "thickness_all",
         om.ExecComp(
@@ -467,10 +467,11 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
         promotes_outputs=["phys_thick"],
     )
 
-    # ---- Design variables (57 active; sweep/dihedral excluded) -----------
+    # ---- Design variables (75 active; dihedral excluded — zero BEM gradient) -
     prob.model.add_design_var("rpm",             lower=RPM_LOWER, upper=RPM_UPPER, units="rpm")
     prob.model.add_design_var("delta_twist_deg", lower=-5.0,    upper=5.0)
-    prob.model.add_design_var("delta_chord_R",   lower=-0.03,   upper=0.03)
+    prob.model.add_design_var("delta_chord_R",   lower=-0.07,   upper=0.03)
+    prob.model.add_design_var("sweep_R",         lower=0.0,     upper=0.12)
     prob.model.add_design_var("delta_tc",        lower=-0.03,   upper=0.04)
     prob.model.add_design_var("theta2",          lower=105.0,   upper=135.0)
     prob.model.add_design_var("theta3",          lower=225.0,   upper=255.0)
@@ -524,7 +525,7 @@ def run_optimization(thrust_min_hover=THRUST_HOVER_MIN,
     Run the full MDAO optimisation.
 
     Hybrid strategy (use_hybrid=True):
-      Phase 1: SimpleGADriver (pop=50, gen=30) for global search
+      Phase 1: SimpleGADriver (pop=200, gen=50) for global search
       Phase 2: ScipyOptimizeDriver SLSQP starting from GA best
     """
     if use_hybrid:
@@ -535,30 +536,121 @@ def run_optimization(thrust_min_hover=THRUST_HOVER_MIN,
                           rpm_init, rho, verbose)
 
 
+def run_multistart(n_starts=8, thrust_min_hover=THRUST_HOVER_MIN,
+                   thrust_min_cruise=THRUST_CRUISE_MIN,
+                   rho=1.225, seed=42, verbose=True):
+    """
+    Run SLSQP from n_starts random starting points; return the best result.
+
+    Start 0 is always the baseline (RPM_HOVER_INIT, zero perturbations).
+    Starts 1..n-1 are random perturbations biased toward noise-reducing directions:
+      - chord biased low (LETI ∝ chord²)
+      - sweep biased high (cos⁴ correction)
+      - RPM near hover range (thrust constraint limits RPM travel)
+    """
+    blade  = baseline_apc7x5e()
+    n_def  = N_BLADE_STAT
+    rng    = np.random.default_rng(seed)
+    best_spl  = np.inf
+    best_prob = None
+
+    for i in range(n_starts):
+        if i == 0:
+            rpm_i = RPM_HOVER_INIT
+            dt_i  = np.zeros(n_def)
+            dc_i  = np.zeros(n_def)
+            sw_i  = np.zeros(n_def)
+            dtc_i = np.zeros(n_def)
+            th2_i, th3_i = 120.0, 240.0
+        else:
+            rpm_i = float(rng.uniform(6000.0, 8500.0))
+            dt_i  = rng.uniform(-3.0,  3.0,  n_def)
+            dc_i  = rng.uniform(-0.06, 0.01, n_def)   # bias: thin chord
+            sw_i  = rng.uniform( 0.02, 0.10, n_def)   # bias: high sweep
+            dtc_i = rng.uniform(-0.02, 0.02, n_def)
+            th2_i = float(rng.uniform(105.0, 135.0))
+            th3_i = float(rng.uniform(225.0, 255.0))
+            dc_i, dtc_i = _repair_tc(blade, dc_i, dtc_i)
+
+        prob_i = build_problem(thrust_min_hover=thrust_min_hover,
+                               thrust_min_cruise=thrust_min_cruise,
+                               rpm_init=rpm_i, rho=rho)
+        prob_i.setup()
+        prob_i.set_val("rpm",             rpm_i)
+        prob_i.set_val("delta_twist_deg", dt_i)
+        prob_i.set_val("delta_chord_R",   dc_i)
+        prob_i.set_val("sweep_R",         sw_i)
+        prob_i.set_val("delta_tc",        dtc_i)
+        prob_i.set_val("theta2",          th2_i)
+        prob_i.set_val("theta3",          th3_i)
+        prob_i.run_driver()
+
+        spl_i = float(prob_i.get_val("SPL_weighted")[0])
+        thrust_ok = float(prob_i.get_val("thrust_hover")[0]) >= thrust_min_hover * 0.99
+
+        if verbose:
+            status = "feasible" if thrust_ok else "infeasible"
+            print(f"  [start {i}] SPL={spl_i:.2f} dBA  thrust="
+                  f"{float(prob_i.get_val('thrust_hover')[0]):.3f} N  ({status})")
+
+        if thrust_ok and spl_i < best_spl:
+            best_spl  = spl_i
+            best_prob = prob_i
+
+    if best_prob is None:
+        best_prob = prob_i   # fallback if all infeasible
+
+    if verbose:
+        print(f"\n=== Multistart Best: {best_spl:.2f} dBA ===")
+        _print_results(best_prob)
+        _print_design_vars(best_prob)
+
+    return best_prob
+
+
 def _repair_tc(blade, dc_R, dtc, n_stations=N_STATIONS):
     """
-    Clip delta_tc upward so that chord × tc >= MIN_PRINT_THICKNESS at every
-    evaluation station.  Preserves the GA's chord/twist/spacing solution and
-    only adjusts t/c as needed — avoids the heavy-handed _feasible_start reset.
+    Repair GA geometry so that chord × tc >= MIN_PRINT_THICKNESS everywhere.
+
+    Pass 1: raise delta_tc at violated stations (preferred — preserves chord).
+    Pass 2: if t/c is already at its upper bound (+0.04) and still too thin,
+            raise delta_chord_R just enough to close the gap.  This handles
+            the case where chord is near its lower bound and t/c alone cannot
+            satisfy the wall-thickness constraint.
+
+    Returns (dc_R_repaired, dtc_repaired) — both arrays at the 18 definition
+    stations, clipped to their respective DV bounds.
     """
     r_m, chord0, _, tc0, _, _ = blade.get_full_stations(n_stations)
-    R = blade.radius_m
+    R      = blade.radius_m
+    r_def  = blade.r_R * R
 
-    # Interpolate delta_chord from 18 definition to n_stations evaluation
-    r_def = blade.r_R * R
-    dc_interp = np.interp(r_m, r_def, dc_R)
-    dtc_interp = np.interp(r_m, r_def, dtc)
+    dc_interp  = np.interp(r_m, r_def, dc_R).copy()
+    dtc_interp = np.interp(r_m, r_def, dtc).copy()
 
-    chord_m = chord0 + dc_interp * R
-    chord_m = np.maximum(chord_m, 1e-4)
-    tc_min  = MIN_PRINT_THICKNESS / chord_m - tc0  # minimum delta_tc per station
-    dtc_interp = np.maximum(dtc_interp, tc_min)
-    dtc_interp = np.clip(dtc_interp, -0.03, 0.04)
+    chord_m = np.maximum(chord0 + dc_interp * R, 1e-4)
 
-    # Map repaired evaluation values back to 18 definition stations
-    r_def = blade.r_R * R
-    dtc_repaired = np.interp(r_def, r_m, dtc_interp)
-    return np.clip(dtc_repaired, -0.03, 0.04)
+    for i in range(len(r_m)):
+        phys = chord_m[i] * (tc0[i] + dtc_interp[i])
+        if phys >= MIN_PRINT_THICKNESS:
+            continue
+
+        # Pass 1: raise t/c
+        dtc_needed = MIN_PRINT_THICKNESS / chord_m[i] - tc0[i]
+        if dtc_needed <= 0.04:
+            dtc_interp[i] = dtc_needed
+            continue
+
+        # Pass 2: t/c maxed — raise chord enough to cover the remaining gap
+        dtc_interp[i] = 0.04
+        tc_at_max     = tc0[i] + 0.04
+        chord_needed  = MIN_PRINT_THICKNESS / tc_at_max
+        dc_interp[i] += (chord_needed - chord_m[i]) / R
+        chord_m[i]    = chord_needed
+
+    dc_repaired  = np.clip(np.interp(r_def, r_m, dc_interp),  -0.07, 0.03)
+    dtc_repaired = np.clip(np.interp(r_def, r_m, dtc_interp), -0.03, 0.04)
+    return dc_repaired, dtc_repaired
 
 
 def _run_slsqp(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
@@ -615,14 +707,14 @@ def _run_hybrid(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
 
     # ---- Phase 1: GA global search ----------------------------------------
     if verbose:
-        print("\n=== Phase 1: GA global search (pop=50, gen=30) ===")
+        print("\n=== Phase 1: GA global search (pop=200, gen=50) ===")
 
     prob_ga = build_problem(thrust_min_hover=thrust_min_hover,
                             thrust_min_cruise=thrust_min_cruise,
                             rpm_init=rpm_init, rho=rho)
     prob_ga.driver = om.SimpleGADriver()
-    prob_ga.driver.options["pop_size"]         = 50
-    prob_ga.driver.options["max_gen"]          = 30
+    prob_ga.driver.options["pop_size"]         = 200
+    prob_ga.driver.options["max_gen"]          = 50
     prob_ga.driver.options["Pc"]               = 0.5    # crossover probability
     prob_ga.driver.options["Pm"]               = 0.01   # mutation probability
     prob_ga.driver.options["penalty_parameter"] = 100.0  # strong constraint enforcement
@@ -668,15 +760,15 @@ def _run_hybrid(thrust_min_hover, thrust_min_cruise, rpm_init, rho, verbose):
         start_th2 = ga_th2
         start_th3 = ga_th3
     elif ga_thick_bad:
-        # Only thickness violated: repair delta_tc, keep the rest of the GA solution.
+        # Only thickness violated: repair t/c then chord if needed.
         blade_tmp = baseline_apc7x5e()
-        dtc_repaired = _repair_tc(blade_tmp, ga_dc, ga_dtc)
+        dc_repaired, dtc_repaired = _repair_tc(blade_tmp, ga_dc, ga_dtc)
         if verbose:
             print(f"[HYBRID] GA thin blade (min={ga_min_thick*1e3:.2f} mm); "
-                  f"repairing delta_tc — keeping RPM/twist/chord/spacing from GA.")
+                  f"repairing delta_tc/delta_chord — keeping RPM/twist/spacing from GA.")
         start_rpm = ga_rpm
         start_dt  = ga_dt
-        start_dc  = ga_dc
+        start_dc  = dc_repaired
         start_sw  = ga_sw
         start_dtc = dtc_repaired
         start_z   = ga_z

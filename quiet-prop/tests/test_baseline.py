@@ -93,9 +93,9 @@ def test_bpm_noise():
         x_tr_c=aero["x_tr_c"],
     )
 
-    # Amiet LETI dominates; tonal = -200 dB (steady-loading BPF near-zero at M_tip~0.19)
+    # Amiet LETI dominates broadband; BVI tonal ~62-65 dBA (~10 dB below broadband)
     ok  = _check("SPL total (dBA)",    res["SPL_total"],     60.0, 85.0, "dBA")
-    ok &= _check("SPL tonal (dB)",     res["SPL_tonal"],   -300.0,  0.0, "dB")
+    ok &= _check("SPL tonal (dBA)",    res["SPL_tonal"],     40.0, 80.0, "dBA")
     ok &= _check("SPL broadband (dB)", res["SPL_broadband"], 60.0, 85.0, "dB")
 
     print(f"  SPL total={res['SPL_total']:.1f} dBA  "

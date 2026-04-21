@@ -1,5 +1,5 @@
 """
-Aeroacoustic noise model: BPM broadband + Amiet LETI.
+Aeroacoustic noise model: BPM broadband + Amiet LETI + BVI tonal.
 
 Broadband (dominant mechanism for low-M_tip drones):
   - TBL-TE: turbulent trailing-edge (BPM 1989)
@@ -7,14 +7,16 @@ Broadband (dominant mechanism for low-M_tip drones):
   - Amiet LETI: leading-edge turbulence interaction (Amiet 1975).
     Dominant source for real drones (~60-70 dBA); gradients w.r.t.
     chord and v_rel give the optimizer real signal.
+  - Amiet swept-LE: S_pp *= cos⁴(Λ) per station (Amiet 1975).
 
-Tonal (steady-loading BPF):
-  Steady-loading tonal is physically near-zero at M_tip ~ 0.19 for a
-  compact rotor at broadside — both Gutin (Bessel collapse) and the
-  FW-H compact-dipole confirm this. Real drone BPF tones come from
-  UNSTEADY loading (blade-vortex interaction), not modelled here.
-  SPL_tonal is returned as -200 dB (placeholder for future BVI model).
-  _fwh_tonal_spl and _blade_spacing_factor are retained for that work.
+Tonal (BVI unsteady loading):
+  Steady-loading BPF tonal is near-zero at M_tip~0.19 (Gutin/FW-H).
+  Real drone BPF tones come from blade-vortex interaction (BVI):
+    Γ_tip = T / (ρ B Ω R π)          — lifting-line tip vortex strength
+    h     = v_induced / (B Ω)         — characteristic miss distance
+    p_m   = ρ v_tip Γ / (2π r) × m^-1.5 × F_spacing  — harmonic pressure
+  Gives ~62-65 dBA at baseline, ~10 dB below broadband.
+  Gradients flow through thrust → optimizer has BVI signal.
 """
 
 import numpy as np
@@ -239,11 +241,63 @@ def _fwh_tonal_spl(thrust, torque, rpm, num_blades, radius_m,
 
 
 # ---------------------------------------------------------------------------
+# A-weighting at arbitrary frequency (log-linear interpolation)
+# ---------------------------------------------------------------------------
+
+def _a_weight_interp(freq):
+    """A-weighting correction [dB] at any frequency via log-linear interpolation."""
+    return float(np.interp(np.log10(max(freq, 1.0)),
+                           np.log10(THIRD_OCT_FREQS), A_WEIGHT))
+
+
+# ---------------------------------------------------------------------------
+# BVI tonal noise (Widnall 1971 / Leishman 2006 parametric)
+# ---------------------------------------------------------------------------
+
+def _bvi_tonal_spl(thrust, rpm, num_blades, radius_m,
+                   blade_angles_deg=None, rho=1.225, r_obs=1.0, n_harmonics=5):
+    """
+    A-weighted BVI tonal SPL [dBA] — Widnall (1971) / Leishman (2006) parametric.
+
+    Physics:
+        Γ_tip = T / (ρ B Ω R π)          lifting-line tip vortex circulation
+        h     = v_i / (B Ω)              miss distance; v_i = sqrt(T/2ρπR²)
+        p_m   = ρ v_tip Γ / (2π r_obs)  × m^-1.5 × F_int(m)
+
+    At APC 7x5E baseline (7000 RPM, 2.87 N): ~64 dBA — ~10 dB below broadband.
+    Gradients w.r.t. thrust flow back through the MDAO graph.
+    """
+    if thrust <= 0.0:
+        return -200.0
+
+    Omega  = rpm * 2.0 * np.pi / 60.0
+    v_tip  = Omega * radius_m
+    B      = num_blades
+    f_bpf  = B * Omega / (2.0 * np.pi)
+
+    # Tip vortex circulation from lifting-line / momentum theory
+    Gamma_tip = thrust / max(rho * B * Omega * radius_m * np.pi, 1e-12)
+
+    # Compact-dipole pressure amplitude reference (m=1, unit spacing factor)
+    p_ref = rho * v_tip * Gamma_tip / (2.0 * np.pi * r_obs)
+
+    ms_a = 0.0
+    for m in range(1, n_harmonics + 1):
+        F_int = (_blade_spacing_factor(m, blade_angles_deg)
+                 if blade_angles_deg is not None else 1.0)
+        p_m  = p_ref * float(m) ** (-1.5) * F_int
+        ms_a += p_m ** 2 * 10.0 ** (_a_weight_interp(m * f_bpf) / 10.0)
+
+    return 10.0 * np.log10(max(ms_a / P_REF ** 2, 1e-300))
+
+
+# ---------------------------------------------------------------------------
 # Amiet leading-edge turbulence interaction noise (LETI)
 # ---------------------------------------------------------------------------
 
 def _amiet_leti_spl(chord, v_rel, dr, r_obs=1.0,
-                    turb_intensity=0.05, turb_length_scale=0.01, rho=1.225):
+                    turb_intensity=0.005, turb_length_scale=0.01, rho=1.225,
+                    cos_sweep=1.0):
     """
     One-third-octave SPL from leading-edge turbulence interaction (Amiet 1975).
 
@@ -257,12 +311,17 @@ def _amiet_leti_spl(chord, v_rel, dr, r_obs=1.0,
         l_y    = min(dr, π L_t)     spanwise correlation length
         Φ_uu   = one-sided turbulence velocity PSD [m²/s]  (von Karman spectrum)
 
+    Swept-LE correction (Amiet 1975): for sweep angle Λ the upwash normal to the
+    LE reduces to w·cos(Λ), and the effective scattering half-chord to b·cos(Λ).
+    Combined: S_pp_swept = S_pp_unswept × cos⁴(Λ).
+
     One-third octave conversion:  ms_band = S_pp · Δf,  Δf ≈ 0.2316 f
 
     Parameters
     ----------
-    turb_intensity     : u_rms / v_rel  (default 0.05 = 5%)
+    turb_intensity     : u_rms / v_rel  (default 0.005 ≈ calm hover)
     turb_length_scale  : integral length scale L_t [m]  (default 0.01 m)
+    cos_sweep          : cos(Λ) of local LE sweep angle (1.0 = unswept)
     """
     if v_rel < 1.0:
         return np.full(len(THIRD_OCT_FREQS), -200.0)
@@ -279,12 +338,13 @@ def _amiet_leti_spl(chord, v_rel, dr, r_obs=1.0,
     # Spanwise correlation length: compact strip or turbulence-limited
     l_y = min(dr, np.pi * turb_length_scale)
 
-    # Compact-source PSD [Pa²/Hz]
+    # Compact-source PSD [Pa²/Hz]; swept-LE correction: S_pp ∝ cos⁴(Λ)
     half_chord = 0.5 * chord
     S_pp = ((rho * C_SOUND * k0) ** 2
             * half_chord ** 2 * l_y * dr
             * Phi_uu
-            / (4.0 * np.pi ** 2 * r_obs ** 2))
+            / (4.0 * np.pi ** 2 * r_obs ** 2)
+            * cos_sweep ** 4)
 
     # One-third octave mean-square pressure
     delta_f = f * (2.0 ** (1.0 / 6.0) - 2.0 ** (-1.0 / 6.0))
@@ -300,7 +360,8 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
               thrust, torque, rpm, num_blades, radius_m,
               rho=1.225, r_obs=1.0,
               x_tr_c=None, blade_angles_deg=None,
-              turb_intensity=0.005, turb_length_scale=0.01):
+              turb_intensity=0.005, turb_length_scale=0.01,
+              sweep_m=None):
     """
     Compute SPL spectrum (BPM broadband + Amiet LETI).
 
@@ -317,11 +378,23 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
     blade_angles_deg   : array (B,) — retained for future BVI tonal model
     turb_intensity     : u_rms / v_rel for Amiet LETI (default 0.005 ≈ calm hover)
     turb_length_scale  : integral length scale in m for Amiet LETI (default 0.01)
+    sweep_m            : array (N,) — LE sweep offset in m; None = unswept
     """
     N = len(r_m)
     if x_tr_c is None:
         x_tr_c = np.zeros(N)
     x_tr_c = np.asarray(x_tr_c, dtype=float)
+
+    # Per-station LE sweep angle -> cos⁴ correction for Amiet LETI
+    if sweep_m is not None:
+        sweep_m = np.asarray(sweep_m, dtype=float)
+        r_m_arr = np.asarray(r_m, dtype=float)
+        # Local sweep angle: dSweep/dr; cap at 60° to avoid unphysical results
+        dsweep_dr = np.gradient(sweep_m, r_m_arr)
+        sweep_angle = np.clip(np.arctan(np.abs(dsweep_dr)), 0.0, np.deg2rad(60.0))
+        cos_sweep_arr = np.cos(sweep_angle)
+    else:
+        cos_sweep_arr = np.ones(N)
 
     n_freqs      = len(THIRD_OCT_FREQS)
     SPL_spectrum = np.full(n_freqs, -200.0)
@@ -351,18 +424,21 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
 
         # Amiet LETI — dominant for real drones; sensitive to chord and v_rel
         spl_leti = _amiet_leti_spl(c, vr, dr_i, r_obs,
-                                   turb_intensity, turb_length_scale, rho)
+                                   turb_intensity, turb_length_scale, rho,
+                                   cos_sweep=float(cos_sweep_arr[i]))
         SPL_spectrum = 10 * np.log10(
             10 ** (SPL_spectrum / 10) + 10 ** (spl_leti / 10) + 1e-300)
 
     SPL_broadband = 10 * np.log10(np.sum(10 ** (SPL_spectrum / 10)) + 1e-300)
 
-    # Tonal placeholder — steady-loading BPF is near-zero at M_tip~0.19
-    # (compact source, broadside observer). BVI unsteady loading not yet modelled.
-    SPL_tonal = -200.0
+    # BVI tonal (unsteady loading, dominant real-drone tonal mechanism)
+    SPL_tonal = _bvi_tonal_spl(thrust, rpm, num_blades, radius_m,
+                                blade_angles_deg, rho, r_obs)
 
-    SPL_A     = SPL_spectrum + A_WEIGHT
-    SPL_total = 10 * np.log10(np.sum(10 ** (SPL_A / 10)) + 1e-300)
+    SPL_A        = SPL_spectrum + A_WEIGHT
+    SPL_bb_a     = 10 * np.log10(np.sum(10 ** (SPL_A / 10)) + 1e-300)
+    SPL_total    = 10 * np.log10(
+        10 ** (SPL_bb_a / 10) + 10 ** (SPL_tonal / 10) + 1e-300)
 
     return {
         "SPL_total":     SPL_total,
@@ -396,6 +472,7 @@ class BPMComponent(om.ExplicitComponent):
         self.add_input("v_rel",           val=np.zeros(N), units="m/s")
         self.add_input("aoa_deg",         val=np.zeros(N))
         self.add_input("x_tr_c",         val=np.zeros(N))   # from CCBladeComponent
+        self.add_input("sweep_m",         val=np.zeros(N), units="m")  # from GeometryFullComponent
         self.add_input("thrust",          val=0.0,    units="N")
         self.add_input("torque",          val=0.0,    units="N*m")
         self.add_input("rpm",             val=5000.0, units="rpm")
@@ -431,6 +508,7 @@ class BPMComponent(om.ExplicitComponent):
             blade_angles_deg=inputs["blade_angles_deg"],
             turb_intensity=float(inputs["turb_intensity"][0]),
             turb_length_scale=float(inputs["turb_length_scale"][0]),
+            sweep_m=inputs["sweep_m"],
         )
         outputs["SPL_total"]     = res["SPL_total"]
         outputs["SPL_broadband"] = res["SPL_broadband"]
