@@ -17,8 +17,8 @@ Drone sizing basis (7-inch UAV, 4-rotor)
 
 Thrust targets (BEM-derived, iFlight XING-E 2814 900KV on 4S):
   900 KV × 14.8 V nominal = 13,320 RPM no-load; ~75% under load -> ~10,000 RPM max
-  Hover    (1g, ~53% throttle) :  2.28 N @ ~7,000 RPM
-  Maneuver (TWR 2.5, ~85% thr) :  5.69 N @ ~9,500 RPM   <- hover constraint
+  Hover    (1g, ~53% throttle) :  2.28 N @ ~7,000 RPM   <- hover constraint
+  Maneuver (TWR 2.5, ~85% thr) :  5.69 N @ ~9,500 RPM
   Cruise   (level flight 15m/s):  2.33 N                 <- cruise constraint (see below)
   Full thr (TWR ~3.1, 100%)    :  7.96 N @ ~10,000 RPM
 
@@ -89,10 +89,11 @@ DRONE_AUW_KG        = 0.928    # kg  all-up weight
 DRONE_N_ROTORS      = 4        # number of rotors
 DRONE_G             = 9.81     # m/s^2
 
-# Thrust per rotor at TWR 2.5 (dynamic maneuvering constraint).
-DRONE_TWR_MANEUVER  = 2.5
-THRUST_HOVER_MIN    = (DRONE_AUW_KG * DRONE_G * DRONE_TWR_MANEUVER
-                       / DRONE_N_ROTORS)   # 5.69 N
+# Thrust per rotor required to sustain 1g hover (equals W/4).
+# NOTE: TWR 2.5 maneuver capability is a motor/ESC selection requirement,
+# not an acoustic operating point.  Optimising at TWR 2.5 forces RPM to
+# ~9 500 RPM, inflating hover noise by ~14 dB — an apples-to-oranges error.
+THRUST_HOVER_MIN    = DRONE_AUW_KG * DRONE_G / DRONE_N_ROTORS   # 2.28 N
 
 # ---------------------------------------------------------------------------
 # Cruise operating point — pitched-forward quadrotor physics
@@ -220,6 +221,36 @@ class WeightedSPLComponent(om.ExplicitComponent):
 
 
 # ---------------------------------------------------------------------------
+# Twist monotonicity constraint component
+# ---------------------------------------------------------------------------
+
+class TwistMonotonicityComponent(om.ExplicitComponent):
+    """
+    Computes adjacent-station twist differences to enforce aerodynamic wash-out.
+
+    Outputs twist_diff[i] = twist_deg[i] - twist_deg[i+1].
+    Constraining twist_diff >= 0 ensures monotonically decreasing twist from
+    root to tip, preventing the optimizer from producing non-physical
+    'rollercoaster' distributions that exploit BEMT numerical loopholes.
+    """
+
+    def initialize(self):
+        self.options.declare("n_stations", default=N_STATIONS)
+
+    def setup(self):
+        N = self.options["n_stations"]
+        self.add_input("twist_deg",  val=np.zeros(N))
+        self.add_output("twist_diff", val=np.zeros(N - 1))
+
+    def setup_partials(self):
+        self.declare_partials("*", "*", method="fd", step=1e-4)
+
+    def compute(self, inputs, outputs):
+        t = inputs["twist_deg"]
+        outputs["twist_diff"] = t[:-1] - t[1:]
+
+
+# ---------------------------------------------------------------------------
 # Balance constraint component
 # ---------------------------------------------------------------------------
 
@@ -246,7 +277,7 @@ class BalanceComponent(om.ExplicitComponent):
 
 def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
                   thrust_min_cruise=THRUST_CRUISE_MIN,
-                  rpm_init=RPM_HOVER_INIT, rho=1.225, max_imbalance=0.15):
+                  rpm_init=RPM_HOVER_INIT, rho=1.225, max_imbalance=0.05):
     """
     Assemble and return the full Phase-2 OpenMDAO Problem.
 
@@ -387,6 +418,14 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
         promotes_outputs=["max_stress", "min_thickness"],
     )
 
+    # ---- Twist monotonicity (wash-out enforcement) -----------------------
+    model.add_subsystem(
+        "twist_mono",
+        TwistMonotonicityComponent(n_stations=N_STATIONS),
+        promotes_inputs=["twist_deg"],
+        promotes_outputs=["twist_diff"],
+    )
+
     # ---- Rotor balance ---------------------------------------------------
     model.add_subsystem(
         "balance",
@@ -428,6 +467,10 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     prob.model.add_constraint("max_stress",       upper=ALLOWABLE_STRESS)
     prob.model.add_constraint("min_thickness",    lower=MIN_PRINT_THICKNESS)
     prob.model.add_constraint("imbalance_factor", upper=max_imbalance)
+    # Enforce monotonically decreasing twist (aerodynamic wash-out).
+    # twist_diff[i] = twist[i] - twist[i+1] >= 0 prevents rollercoaster
+    # distributions where the optimizer exploits BEMT numerical artefacts.
+    prob.model.add_constraint("twist_diff",       lower=0.0)
 
     return prob
 

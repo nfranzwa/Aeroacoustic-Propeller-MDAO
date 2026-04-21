@@ -242,6 +242,17 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg, cl,
     """
     Compute SPL spectrum (BPM broadband + Gutin tonal).
 
+    CALIBRATION NOTE — drone-scale props (Re ~ 30 000–100 000):
+      • TBL-TE broadband peak frequency (St1·v_rel/δ*) falls at 30–80 kHz for
+        drone blade stations — above the audible range — so dBA broadband is
+        suppressed by the A-weighting curve.
+      • Gutin tonal: J_B(mBΩR/c) is O(1e-3) at M_tip ≈ 0.19, giving tonal
+        SPL ≈ 25–35 dBA vs measured 60–70 dBA at 1 m.
+      • Absolute SPL values are therefore ~30 dB below reality.  Relative
+        comparisons between designs remain valid for optimisation purposes,
+        but do not report raw dBA values as physical predictions without
+        applying a measurement-based calibration offset.
+
     Parameters
     ----------
     x_tr_c        : array (N,) or None
