@@ -232,73 +232,115 @@ def _triangulate_surface(sections):
     return triangles
 
 
-def _rotate_pts_y(pts, angle_deg):
-    """Rotate (N,3) point array around the Y axis (radial axis = blade rotation plane)."""
-    a   = np.deg2rad(angle_deg)
+def _to_drone_frame(pts):
+    """
+    Convert from blade-local frame to drone-prop world frame.
+
+    Blade-local:  x=chordwise, y=radial (hub→tip), z=thickness (suction up)
+    Drone-world:  X=radial (blade 0 at azimuth 0°),
+                  Y=tangential/chord, Z=thrust (up)
+
+    Swap x↔y so the blade lies flat in the XY (rotor disk) plane with
+    thrust pointing up (+Z). Blade 0 extends along +X.
+    """
+    p = np.asarray(pts)
+    return np.column_stack([p[:, 1],   # X = radial
+                             p[:, 0],   # Y = chordwise (tangential)
+                             p[:, 2]])  # Z = thickness (thrust axis)
+
+
+def _rotate_pts_z(pts, angle_deg):
+    """Rotate (N,3) point array around the Z axis (drone thrust axis)."""
+    a = np.deg2rad(angle_deg)
     cos_a, sin_a = np.cos(a), np.sin(a)
-    R = np.array([[cos_a, 0, sin_a],
-                  [0,     1, 0     ],
-                  [-sin_a,0, cos_a ]])
-    return pts @ R.T
+    R = np.array([[ cos_a, -sin_a, 0],
+                  [ sin_a,  cos_a, 0],
+                  [ 0,      0,     1]])
+    return np.asarray(pts) @ R.T
+
+
+def _hub_cylinder(radius_m, hub_r_R, height_m=0.004, n_sides=32):
+    """
+    Generate triangles for a thin hub cylinder (cosmetic, not structural).
+    radius_m  : blade tip radius (m)
+    hub_r_R   : hub radius as fraction of tip radius
+    height_m  : cylinder half-height (total height = 2*height)
+    """
+    r  = hub_r_R * radius_m
+    h  = height_m
+    th = np.linspace(0, 2*np.pi, n_sides, endpoint=False)
+    top    = np.column_stack([r*np.cos(th), r*np.sin(th), np.full(n_sides,  h)])
+    bottom = np.column_stack([r*np.cos(th), r*np.sin(th), np.full(n_sides, -h)])
+    c_top  = np.array([0., 0.,  h])
+    c_bot  = np.array([0., 0., -h])
+    tris = []
+    for i in range(n_sides):
+        j = (i + 1) % n_sides
+        # Side quad
+        tris.append((bottom[i], top[i],    top[j]))
+        tris.append((bottom[i], top[j],    bottom[j]))
+        # Top cap
+        tris.append((c_top, top[i],    top[j]))
+        # Bottom cap
+        tris.append((c_bot, bottom[j], bottom[i]))
+    return tris
 
 
 def _build_blade_sections(blade, n_sections=18, n_airfoil=40):
-    """Return list of (n_af, 3) arrays, one per spanwise section."""
+    """
+    Return list of (n_af, 3) arrays in DRONE FRAME (XY=disk, Z=thrust).
+    Blade 0 extends along +X at azimuth 0 deg.
+    """
     r_m, chord_m, twist_deg, tc, sweep_m, z_off = blade.get_full_stations(n_sections)
     sections = []
     for i in range(n_sections):
-        pts = section_3d_points(chord_m[i], twist_deg[i], sweep_m[i],
-                                z_off[i], r_m[i], tc[i], n_airfoil)
-        sections.append(np.array(pts))
+        pts = np.array(section_3d_points(chord_m[i], twist_deg[i], sweep_m[i],
+                                         z_off[i], r_m[i], tc[i], n_airfoil))
+        sections.append(_to_drone_frame(pts))
     return sections
 
 
-def export_blade_stl(blade, output_path, n_sections=18, n_airfoil=40):
+def export_blade_stl(blade, output_path, n_sections=18, n_airfoil=40,
+                     add_hub=True):
     """
-    Generate and export a single-blade STL file (pure Python, no CadQuery).
+    Export a single drone-propeller blade STL.
 
-    Parameters
-    ----------
-    blade       : BladeGeometry
-    output_path : str   Path to output .stl file
-    n_sections  : int   Spanwise cross-sections
-    n_airfoil   : int   Points per airfoil surface
-
-    Returns True always (pure-Python fallback).
+    Coordinate system: rotor disk = XY plane, thrust = +Z.
+    Blade extends along +X at azimuth 0 deg.
     """
     print(f"[STL] Building blade ({n_sections} sections x {n_airfoil} pts)...")
-    sections   = _build_blade_sections(blade, n_sections, n_airfoil)
-    triangles  = _triangulate_surface(sections)
+    sections  = _build_blade_sections(blade, n_sections, n_airfoil)
+    triangles = _triangulate_surface(sections)
+    if add_hub:
+        triangles += _hub_cylinder(blade.radius_m, blade.r_R[0])
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     _write_stl_triangles(triangles, output_path, "blade")
     print(f"[STL] Single blade -> {output_path}  ({len(triangles)} triangles)")
     return True
 
 
-def export_rotor_stl(blade, output_path, n_sections=18, n_airfoil=40):
+def export_rotor_stl(blade, output_path, n_sections=18, n_airfoil=40,
+                     add_hub=True):
     """
-    Generate and export a full 3-blade rotor assembly STL (pure Python).
+    Export a full drone-propeller rotor STL (all blades + hub).
 
-    Each blade is replicated and rotated around the Y axis (radial axis)
-    by its azimuthal angle. All blades are written into one STL file as
-    separate solids.
-
-    Parameters
-    ----------
-    blade       : BladeGeometry
-    output_path : str   Path to output .stl file
+    Coordinate system: rotor disk = XY plane, thrust = +Z.
+    Blades are placed at azimuthal angles in blade.blade_angles_deg by
+    rotating around Z (thrust axis).
     """
     print(f"[STL] Building rotor ({blade.num_blades} blades, {n_sections} sections)...")
     base_sections = _build_blade_sections(blade, n_sections, n_airfoil)
 
     all_triangles = []
-    for b_idx, angle in enumerate(blade.blade_angles_deg):
+    for angle in blade.blade_angles_deg:
         if abs(angle) < 0.01:
-            rotated_sections = base_sections
+            secs = base_sections
         else:
-            rotated_sections = [_rotate_pts_y(sec, angle) for sec in base_sections]
-        tris = _triangulate_surface(rotated_sections)
-        all_triangles.extend(tris)
+            secs = [_rotate_pts_z(sec, angle) for sec in base_sections]
+        all_triangles.extend(_triangulate_surface(secs))
+
+    if add_hub:
+        all_triangles += _hub_cylinder(blade.radius_m, blade.r_R[0])
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     _write_stl_triangles(all_triangles, output_path, "rotor")
@@ -347,20 +389,41 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from geometry.blade_generator import baseline_hqprop
 
-    blade = baseline_hqprop()
+    # Phase-1 optimised deltas (from prior optimization run)
+    DELTA_TWIST_P1 = np.array([
+        -0.643, -3.712, -4.403, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0,
+        -5.0, -4.727, -4.276, -3.298, -2.644, -1.856, -1.153, 1.004, 0.106])
+    DELTA_CHORD_P1 = np.array([
+        -0.03,  0.03,  0.03,  0.03,  0.03,  0.03,  0.03,
+         0.03,  0.03,  0.03,  0.03,  0.03,  0.03,  0.03,
+         0.03,  0.03,  0.03,  0.0292])
 
-    out_dir = os.path.join(os.path.dirname(__file__),
-                           "..", "results", "stl")
+    blade_base = baseline_hqprop()
+    blade_opt  = (blade_base
+                  .perturb_twist(DELTA_TWIST_P1)
+                  .perturb_chord(DELTA_CHORD_P1))
+    blade_ueq  = blade_base.set_blade_angles([0.0, 115.0, 235.0])
 
-    # Single blade
-    export_blade_stl(blade,
+    out_dir = os.path.join(os.path.dirname(__file__), "..", "results", "stl")
+
+    # ---- Baseline ----
+    print("\n--- Baseline HQProp 7x4x3 ---")
+    export_blade_stl(blade_base,
                      os.path.join(out_dir, "blade_baseline_single.stl"))
-
-    # Full rotor – equal spacing baseline
-    export_rotor_stl(blade,
+    export_rotor_stl(blade_base,
                      os.path.join(out_dir, "rotor_baseline_equal.stl"))
 
-    # Full rotor – unequal spacing example
-    blade_unequal = blade.set_blade_angles([0.0, 115.0, 235.0])
-    export_rotor_stl(blade_unequal,
+    # ---- Phase-1 optimised (for comparison) ----
+    print("\n--- Phase-1 Optimised (quieter) ---")
+    export_blade_stl(blade_opt,
+                     os.path.join(out_dir, "blade_optimised_single.stl"))
+    export_rotor_stl(blade_opt,
+                     os.path.join(out_dir, "rotor_optimised_equal.stl"))
+
+    # ---- Unequal spacing (Phase-2 example) ----
+    print("\n--- Unequal spacing 0/115/235 deg ---")
+    export_rotor_stl(blade_ueq,
                      os.path.join(out_dir, "rotor_baseline_unequal.stl"))
+
+    print("\nAll STL files written to:", os.path.abspath(out_dir))
+    print("Open any .stl in Windows 3D Viewer (double-click) to inspect.")
