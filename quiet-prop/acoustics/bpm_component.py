@@ -1,18 +1,20 @@
 """
-Aeroacoustic noise model: BPM broadband + FW-H tonal + Amiet LETI.
+Aeroacoustic noise model: BPM broadband + Amiet LETI.
 
-Tonal:
-  FW-H compact-dipole loading noise (Hanson 1980 / Lowson 1965 limit).
-  Replaces Gutin+Bessel formula which returns near-zero at M_tip ~ 0.19.
-
-Broadband:
+Broadband (dominant mechanism for low-M_tip drones):
   - TBL-TE: turbulent trailing-edge (BPM 1989)
   - LBL-VS: laminar vortex-shedding (BPM 1989 §3.2)
   - Amiet LETI: leading-edge turbulence interaction (Amiet 1975).
-    Dominant mechanism for real drones (~60-70 dBA); sensitive to chord
-    and v_rel so the optimizer has real gradients.
+    Dominant source for real drones (~60-70 dBA); gradients w.r.t.
+    chord and v_rel give the optimizer real signal.
 
-Unequal blade spacing: Fourier interference factor on tonal harmonics.
+Tonal (steady-loading BPF):
+  Steady-loading tonal is physically near-zero at M_tip ~ 0.19 for a
+  compact rotor at broadside — both Gutin (Bessel collapse) and the
+  FW-H compact-dipole confirm this. Real drone BPF tones come from
+  UNSTEADY loading (blade-vortex interaction), not modelled here.
+  SPL_tonal is returned as -200 dB (placeholder for future BVI model).
+  _fwh_tonal_spl and _blade_spacing_factor are retained for that work.
 """
 
 import numpy as np
@@ -300,20 +302,20 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
               x_tr_c=None, blade_angles_deg=None,
               turb_intensity=0.005, turb_length_scale=0.01):
     """
-    Compute SPL spectrum (BPM broadband + FW-H tonal + Amiet LETI).
-
-    Tonal: FW-H compact-dipole (Hanson 1980).  No Bessel functions; gives
-    physically correct ~70 dB at 1 m for a 7-inch 3-blade prop at 5000 RPM.
+    Compute SPL spectrum (BPM broadband + Amiet LETI).
 
     Broadband: TBL-TE + LBL-VS (BPM 1989) + Amiet LETI (Amiet 1975).
-    Amiet LETI is the dominant mechanism for real drones: blades cutting
-    through atmospheric/wake turbulence gives the 60-70 dBA measured in flight.
+    Amiet LETI is the dominant mechanism at M_tip~0.19; gives 60-70 dBA at 1 m.
+
+    SPL_tonal is returned as -200 dB. Steady-loading BPF tonal is near-zero at
+    this M_tip (compact broadside dipole). blade_angles_deg is retained for
+    future blade-vortex interaction (BVI) unsteady tonal modelling.
 
     Parameters
     ----------
     x_tr_c            : array (N,) — per-station transition x/c (Michel's criterion)
-    blade_angles_deg   : array (B,) — azimuthal positions for unequal spacing
-    turb_intensity     : u_rms / v_rel for Amiet LETI (default 0.05)
+    blade_angles_deg   : array (B,) — retained for future BVI tonal model
+    turb_intensity     : u_rms / v_rel for Amiet LETI (default 0.005 ≈ calm hover)
     turb_length_scale  : integral length scale in m for Amiet LETI (default 0.01)
     """
     N = len(r_m)
@@ -355,18 +357,9 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
 
     SPL_broadband = 10 * np.log10(np.sum(10 ** (SPL_spectrum / 10)) + 1e-300)
 
-    # --- Tonal: FW-H compact-dipole, first 3 harmonics ---
+    # Tonal placeholder — steady-loading BPF is near-zero at M_tip~0.19
+    # (compact source, broadside observer). BVI unsteady loading not yet modelled.
     SPL_tonal = -200.0
-    for m in [1, 2, 3]:
-        spl_tone, f_tone = _fwh_tonal_spl(
-            float(thrust), float(torque), float(rpm),
-            num_blades, radius_m, blade_angles_deg=blade_angles_deg,
-            r_obs=r_obs, harmonic=m)
-        idx = np.argmin(np.abs(THIRD_OCT_FREQS - f_tone))
-        SPL_spectrum[idx] = 10 * np.log10(
-            10 ** (SPL_spectrum[idx] / 10) + 10 ** (spl_tone / 10) + 1e-300)
-        SPL_tonal = 10 * np.log10(
-            10 ** (SPL_tonal / 10) + 10 ** (spl_tone / 10) + 1e-300)
 
     SPL_A     = SPL_spectrum + A_WEIGHT
     SPL_total = 10 * np.log10(np.sum(10 ** (SPL_A / 10)) + 1e-300)
