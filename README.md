@@ -59,25 +59,24 @@ The optimization targets a real 7-inch long-range UAV with the following all-up 
 |:---:|
 | *APC 7x5E baseline (blue) vs Phase 2 optimised (green)* |
 
-| Metric | Baseline @ 7000 RPM | Optimised @ 9459 RPM | Notes |
+| Metric | Baseline @ 7000 RPM | Optimised @ 9454 RPM | Notes |
 |--------|---------------------|----------------------|-------|
-| Thrust hover | 2.87 N | **5.66 N** | meets TWR 2.5 target |
-| Thrust cruise | — | 1.56 N | stale result — cruise model corrected, re-running |
-| Power hover | 17.19 W | 34.90 W | +103% |
-| SPL hover | 30.96 dBA | **46.24 dBA** | +15 dB — RPM penalty |
-| SPL weighted | 31.99 dBA | **43.21 dBA** | best found at TWR 2.5 |
-| Max root stress | — | 14.28 MPa | ≤ 22 MPa ✓ |
+| Thrust hover | 2.87 N | **5.690 N** | meets TWR 2.5 target ✓ |
+| Thrust cruise (axial 3.32 m/s) | 2.33 N | **6.938 N** | exceeds 2.33 N ✓ |
+| Power hover | 17.19 W | 53.15 W | +209% (RPM penalty) |
+| SPL hover | 30.96 dBA | **45.32 dBA** | +14 dB — RPM penalty |
+| SPL cruise | — | **47.01 dBA** | — |
+| SPL weighted | 31.99 dBA | **45.82 dBA** | best found at TWR 2.5 |
+| Max root stress | — | 14.29 MPa | ≤ 22 MPa ✓ |
 | Min wall thickness | — | **0.50 mm** | at print limit ✓ |
-| Imbalance | 0/120/240° | **0/123/225°** | unequal spacing ✓ |
+| Imbalance | 0/120/240° | **0/105/253°** | unequal spacing ✓ |
 
 **Key design changes:**
-- **Twist up +1–3.4° outboard:** shifts lift outboard to generate thrust at high RPM
-- **t/c +0.035 uniformly:** driven by 0.5 mm wall thickness constraint at 9,459 RPM
-- **Chord narrowed inboard, neutral midspan:** reduces drag while holding thrust
-- **Blade spacing 0/123/225°:** breaks BPF coherence for tonal noise reduction
+- **Twist: −5° inboard, +5° outboard:** redistributes lift outboard to generate thrust efficiently at 9,454 RPM
+- **t/c +0.035 uniformly (+0.04 tip):** driven by 0.5 mm wall thickness constraint
+- **Chord narrowed inboard (−0.03R), widened at midspan (+0.025R):** shifts loading distribution outboard
+- **Blade spacing 0/105/253°:** unequal spacing breaks BPF harmonic coherence for tonal noise reduction
 - **Sweep and dihedral: zero** — optimizer found no acoustic benefit at this operating point
-
-**Note:** The cruise model has been corrected since this run (see below). Results above are being superseded by a re-run with the physically correct cruise constraint.
 
 ---
 
