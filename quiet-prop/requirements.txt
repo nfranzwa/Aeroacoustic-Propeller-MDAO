@@ -1,11 +1,14 @@
-openmdao
-ccblade
-pyoptsparse
-pymoo
-scikit-learn
-botorch
-cadquery
-matplotlib
+# Core scientific stack
 numpy
 scipy
-pandas
+matplotlib
+
+# OpenMDAO and optimizer drivers
+openmdao
+pyDOE3          # required by openmdao SimpleGADriver (GA phase)
+
+# Optional: faster linear algebra (recommended for large problems)
+# mkl or openblas already bundled in most scipy distributions
+
+# Note: CadQuery / OCP removed — STL export uses pure-Python triangulation
+# (blade_stl_exporter.py) which is compatible with Python 3.14+
