@@ -2,16 +2,12 @@
 Blade Element Momentum (BEM) solver wrapped as an OpenMDAO ExplicitComponent.
 
 Two-regime implementation:
-  - Forward flight (V_inf >= 0.5 m/s): standard BEM, V_a = V_inf*(1-a)
+  - Forward flight (V_inf >= 0.5 m/s): standard BEM, V_a = V_inf*(1+a)
   - Static/hover  (V_inf < 0.5 m/s):  direct phi iteration via momentum balance
-    phi = arcsin(sqrt(sigma*Cn / (4*F)))
 
-Sign convention (standard propeller BEM):
-  phi   = arctan(V_axial / V_tangential)    [flow angle from rotation plane]
-  alpha = twist - phi                        [angle of attack, positive = nose-up]
-  dT    = 0.5*rho*V_rel^2 * c*B * (Cl*cos(phi) + Cd*sin(phi))
-  dQ    = 0.5*rho*V_rel^2 * c*B * (Cl*sin(phi) - Cd*cos(phi)) * r
-          (positive dQ => shaft inputs torque => propeller mode)
+Additions over Phase 1:
+  - Michel's criterion for laminar/turbulent transition -> outputs x_tr_c per station
+  - x_tr_c = 0: turbulent from LE; x_tr_c = 1: laminar to TE
 """
 
 import numpy as np
@@ -64,19 +60,49 @@ def _prandtl_loss(r, R, R_hub, B, phi):
 
 
 # ---------------------------------------------------------------------------
+# Boundary-layer transition: Michel's empirical criterion
+# ---------------------------------------------------------------------------
+
+NU_AIR = 1.48e-5  # m2/s  (kinematic viscosity, sea level 15degC)
+
+
+def _michel_transition(Re_c, aoa_deg):
+    """
+    Predict suction-side transition location x_tr/c via Michel's criterion.
+
+    Michel (1951): Re_theta_tr = 1.174 * (1 + 22400/Re_x)^0.46 * Re_x^0.46
+    Blasius laminar BL: Re_theta = 0.664 * sqrt(Re_x)
+
+    Setting equal and solving gives Re_x_tr ≈ 3.2e5 for a flat plate.
+    Adverse pressure gradient from positive AoA moves transition forward:
+      Re_x_tr_eff = Re_x_tr * exp(-0.06 * |alpha|)
+
+    Returns
+    -------
+    x_tr_c : ndarray, shape (N,)
+        Transition location / chord. Clipped to [0, 1].
+        0 = turbulent from LE; 1 = laminar to TE.
+    """
+    Re_c  = np.asarray(Re_c,   dtype=float)
+    alpha = np.clip(np.abs(np.asarray(aoa_deg, dtype=float)), 0.0, 30.0)
+
+    # Flat-plate Michel transition Re_x ≈ 3.2e5 (moderate FSTI, ~0.1%)
+    Re_x_tr = 3.2e5 * np.exp(-0.06 * alpha)
+
+    x_tr = np.clip(Re_x_tr / np.maximum(Re_c, 1.0), 0.0, 1.0)
+
+    # Below Re_c = 3e4 -> fully laminar regardless
+    x_tr = np.where(Re_c < 3e4, 1.0, x_tr)
+    return x_tr
+
+
+# ---------------------------------------------------------------------------
 # Static / hover BEM  (V_inf = 0)
 # ---------------------------------------------------------------------------
 
 def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
                 tol=1e-8, max_iter=300):
-    """
-    Solve for phi at each station via momentum balance for V_inf = 0.
-
-    From equating blade-element thrust and actuator-disk momentum:
-        4*F*sin^2(phi) = sigma*Cn(phi)
-    Iterate:  phi_{n+1} = arcsin(sqrt(sigma*Cn(phi_n) / (4*F)))
-    """
-    phi = np.deg2rad(twist_deg) * 0.4    # initial guess: ~40% of geometric angle
+    phi = np.deg2rad(twist_deg) * 0.4
     phi = np.clip(phi, 0.02, np.pi / 4)
     ap  = np.zeros_like(r)
 
@@ -90,12 +116,10 @@ def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
 
         F = _prandtl_loss(r, R, R_hub, B, phi)
 
-        # Momentum-BEM match for phi
         sin2_new = np.clip(sigma * cn / (4.0 * F + 1e-12), 0.0, 0.98)
         phi_new  = np.arcsin(np.sqrt(sin2_new))
         phi_new  = np.clip(phi_new, 0.005, np.pi / 3)
 
-        # Tangential induction (standard BEM)
         kappa_t = sigma * ct / (4.0 * F * np.sin(phi) * np.cos(phi) + 1e-12)
         ap      = np.clip(kappa_t / (1.0 - kappa_t + 1e-12), -0.3, 1.0)
 
@@ -109,7 +133,7 @@ def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
     cn      = cl * np.cos(phi) + cd * np.sin(phi)
     ct      = cl * np.sin(phi) - cd * np.cos(phi)
 
-    v_i   = omega * r * np.tan(phi)          # induced axial velocity
+    v_i   = omega * r * np.tan(phi)
     V_t   = omega * r * (1.0 + ap)
     v_rel = np.sqrt(v_i ** 2 + V_t ** 2)
 
@@ -125,11 +149,6 @@ def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
 
 def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
                  tol=1e-8, max_iter=300):
-    """
-    Standard BEM for V_inf > 0 using PROPELLER momentum convention:
-      V_a = V*(1+a)   [propeller accelerates flow, not decelerates]
-      a   = κ/(1-κ)   where κ = σ*Cn/(4F·sin²φ)
-    """
     a  = np.full(len(r), 0.05)
     ap = np.zeros(len(r))
 
@@ -137,7 +156,7 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
         a_old  = a.copy()
         ap_old = ap.copy()
 
-        V_a = V * (1.0 + a)          # propeller accelerates axial flow
+        V_a = V * (1.0 + a)
         V_t = omega * r * (1.0 + ap)
         phi = np.arctan2(V_a, V_t)
 
@@ -148,13 +167,11 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
 
         F = _prandtl_loss(r, R, R_hub, B, phi)
 
-        # Propeller axial induction: a/(1+a) = κ → a = κ/(1-κ)
         kappa = np.clip(
             sigma * cn / (4.0 * F * np.sin(phi) ** 2 + 1e-12),
             0.0, 0.9)
         a_new = np.clip(kappa / (1.0 - kappa + 1e-12), 0.0, 1.5)
 
-        # Tangential induction (same propeller form)
         kappa_t = np.clip(
             sigma * ct / (4.0 * F * np.sin(phi) * np.cos(phi) + 1e-12),
             -0.5, 0.9)
@@ -186,23 +203,16 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
 # Public BEM solver
 # ---------------------------------------------------------------------------
 
-STATIC_THRESHOLD = 0.5    # m/s — below this, use the static solver
+STATIC_THRESHOLD = 0.5    # m/s
 
 def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
               chord_override=None, twist_override=None,
               tol=1e-8, max_iter=300):
     """
-    Blade Element Momentum solver for a propeller.
-
-    Parameters
-    ----------
-    chord_override : array (n_stations,) or None
-        If provided, replaces blade chord at the n_stations resolution.
-    twist_override : array (n_stations,) or None
-        If provided, replaces blade twist (deg) at the n_stations resolution.
+    Blade Element Momentum solver.
 
     Returns dict: thrust, torque, power, efficiency, CT, CP,
-                  r, v_rel, aoa_deg, cl, cd
+                  r, v_rel, aoa_deg, cl, cd, x_tr_c
     """
     omega = rpm * 2 * np.pi / 60.0
     R     = blade.radius_m
@@ -215,8 +225,8 @@ def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
         chord = np.asarray(chord_override, dtype=float)
     if twist_override is not None:
         twist_deg = np.asarray(twist_override, dtype=float)
-    r      = np.clip(r, R_hub + 1e-6, R - 1e-6)
-    sigma  = B * chord / (2.0 * np.pi * r)
+    r     = np.clip(r, R_hub + 1e-6, R - 1e-6)
+    sigma = B * chord / (2.0 * np.pi * r)
 
     args = (r, chord, twist_deg, sigma, omega, R, R_hub, B, rho)
 
@@ -235,11 +245,15 @@ def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
     CT    = thrust / (rho * n_rps ** 2 * D ** 4)
     CP    = power  / (rho * n_rps ** 3 * D ** 5)
 
+    # Boundary-layer transition per station
+    Re_c  = v_rel * chord / NU_AIR
+    x_tr_c = _michel_transition(Re_c, alpha_d)
+
     return {
         "thrust": thrust, "torque": torque, "power": power,
         "efficiency": efficiency, "CT": CT, "CP": CP,
         "r": r, "v_rel": v_rel, "aoa_deg": alpha_d,
-        "cl": cl, "cd": cd,
+        "cl": cl, "cd": cd, "x_tr_c": x_tr_c,
     }
 
 
@@ -258,11 +272,11 @@ class CCBladeComponent(om.ExplicitComponent):
         N = self.options["n_stations"]
         _, chord0, twist0 = self._blade.get_stations(N)
 
-        self.add_input("rpm",      val=5000.0,    units="rpm")
-        self.add_input("v_inf",    val=0.0,        units="m/s")
-        self.add_input("rho",      val=1.225,      units="kg/m**3")
-        self.add_input("chord_m",  val=chord0,     units="m")
-        self.add_input("twist_deg",val=twist0)
+        self.add_input("rpm",       val=5000.0,    units="rpm")
+        self.add_input("v_inf",     val=0.0,        units="m/s")
+        self.add_input("rho",       val=1.225,      units="kg/m**3")
+        self.add_input("chord_m",   val=chord0,     units="m")
+        self.add_input("twist_deg", val=twist0)
 
         self.add_output("thrust",     val=0.0, units="N")
         self.add_output("torque",     val=0.0, units="N*m")
@@ -270,11 +284,12 @@ class CCBladeComponent(om.ExplicitComponent):
         self.add_output("efficiency", val=0.0)
         self.add_output("CT",         val=0.0)
         self.add_output("CP",         val=0.0)
-        self.add_output("r_m",    val=np.zeros(N), units="m")
-        self.add_output("v_rel",  val=np.zeros(N), units="m/s")
-        self.add_output("aoa_deg",val=np.zeros(N))
-        self.add_output("cl",     val=np.zeros(N))
-        self.add_output("cd",     val=np.zeros(N))
+        self.add_output("r_m",     val=np.zeros(N), units="m")
+        self.add_output("v_rel",   val=np.zeros(N), units="m/s")
+        self.add_output("aoa_deg", val=np.zeros(N))
+        self.add_output("cl",      val=np.zeros(N))
+        self.add_output("cd",      val=np.zeros(N))
+        self.add_output("x_tr_c",  val=np.ones(N))   # transition location
 
     def setup_partials(self):
         self.declare_partials("*", "*", method="fd", step=1e-4)
@@ -294,6 +309,7 @@ class CCBladeComponent(om.ExplicitComponent):
         outputs["aoa_deg"] = res["aoa_deg"]
         outputs["cl"]      = res["cl"]
         outputs["cd"]      = res["cd"]
+        outputs["x_tr_c"]  = res["x_tr_c"]
 
 
 if __name__ == "__main__":
@@ -302,4 +318,6 @@ if __name__ == "__main__":
         res = bem_solve(blade, rpm=rpm, v_inf=v)
         print(f"RPM={rpm}, V={v}: T={res['thrust']:.3f}N  "
               f"CT={res['CT']:.4f}  CP={res['CP']:.4f}  "
-              f"eta={res['efficiency']:.3f}  P={res['power']:.1f}W")
+              f"eta={res['efficiency']:.3f}")
+        print(f"  x_tr_c (mean): {np.mean(res['x_tr_c']):.3f}  "
+              f"Re_c (mean): {np.mean(res['v_rel']*res['r']/(res['r']/blade.radius_m+1e-12)):.0f}")

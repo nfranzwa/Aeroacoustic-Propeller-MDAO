@@ -84,7 +84,7 @@ def test_bpm_noise():
     )
 
     # Small UAV prop at 1 m: 55–90 dBA is physically plausible
-    # Tonal is Bessel-function suppressed for small props (low M_tip) → can be low
+    # Tonal is Bessel-function suppressed for small props (low M_tip) -> can be low
     # Lower bound 15 dBA: LBL-VS noise (dominant for Re<50k) not yet modelled
     ok  = _check("SPL total (dBA)",  res["SPL_total"],  15.0, 95.0, "dBA")
     ok &= _check("SPL tonal (dB)",   res["SPL_tonal"],  -20.0, 95.0, "dB")
