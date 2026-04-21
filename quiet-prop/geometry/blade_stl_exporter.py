@@ -387,7 +387,8 @@ def _export_fallback_csv(blade, stl_path, n_sections, n_airfoil):
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from geometry.blade_generator import baseline_apc7x5e, baseline_hqprop
+    from geometry.blade_generator import baseline_apc7x5e
+    from geometry.blade_importer import load_prop
 
     blade_base = baseline_apc7x5e()
     blade_ueq  = blade_base.set_blade_angles([0.0, 115.0, 235.0])
@@ -401,11 +402,12 @@ if __name__ == "__main__":
     export_rotor_stl(blade_base,
                      os.path.join(out_dir, "rotor_APC_7x5E_3blade.stl"))
 
-    # ---- HQProp reference ----
-    blade_hqprop = baseline_hqprop()
-    print("\n--- HQProp 7x4x3 reference ---")
-    export_rotor_stl(blade_hqprop,
-                     os.path.join(out_dir, "rotor_HQProp_7x4x3_3blade.stl"))
+    # ---- Pitch variants (3-blade, Brandt & Selig 2011) ----
+    for name in ["APC_7x4E", "APC_7x6E"]:
+        blade_v = load_prop(name, num_blades_override=3)
+        print(f"\n--- {name} (3-blade) ---")
+        export_rotor_stl(blade_v,
+                         os.path.join(out_dir, f"rotor_{name}_3blade.stl"))
 
     # ---- Unequal spacing (Phase-2 example) ----
     print("\n--- Unequal spacing 0/115/235 deg ---")

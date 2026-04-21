@@ -212,7 +212,7 @@ def test_blade_importer():
 
     ok  = _check("Catalogue size", len(catalog), 5, 15, "props")
 
-    for name in ["APC_7x5E", "APC_7x4E", "HQProp_7x4x3"]:
+    for name in ["APC_7x5E", "APC_7x4E", "APC_7x6E"]:
         blade = load_prop(name)
         ok &= _check(f"{name} radius (m)", blade.radius_m, 0.08, 0.10, "m")
         ok &= _check(f"{name} stations",   len(blade.r_R),   16,   22)

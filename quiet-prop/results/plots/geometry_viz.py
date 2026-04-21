@@ -20,7 +20,8 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from geometry.blade_generator import baseline_apc7x5e, baseline_hqprop
+from geometry.blade_generator import baseline_apc7x5e
+from geometry.blade_importer import load_prop
 
 BG = "#0d1117"; BLUE = "#58a6ff"; GREEN = "#3fb950"
 ORANGE = "#f0883e"; PURPLE = "#d2a8ff"; SUBTLE = "#30363d"
@@ -82,9 +83,7 @@ def _setup_ax(ax, title, xlabel, ylabel):
 
 def plot_geometry(blade_base, blade_opt=None, save_path=None, show=False):
     blades  = [blade_base] + ([blade_opt] if blade_opt else [])
-    lbl0    = getattr(blade_base, "_label", None) or "APC 7x5E (3-blade)"
-    lbl1    = getattr(blade_opt,  "_label", None) or "Reference" if blade_opt else None
-    labels  = [lbl0] + ([lbl1] if blade_opt else [])
+    labels  = ["APC 7x5E (baseline)"] + (["Comparison"] if blade_opt else [])
     colours = [BLUE]       + ([GREEN]       if blade_opt else [])
 
     fig = plt.figure(figsize=(18, 11), facecolor=BG)
@@ -212,8 +211,9 @@ def plot_geometry(blade_base, blade_opt=None, save_path=None, show=False):
 
 
 if __name__ == "__main__":
-    blade_apc   = baseline_apc7x5e()
-    blade_hqprop = baseline_hqprop()
+    blade_apc  = baseline_apc7x5e()
+    blade_7x4e = load_prop("APC_7x4E", num_blades_override=3)
+    blade_7x6e = load_prop("APC_7x6E", num_blades_override=3)
 
     out_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -221,9 +221,13 @@ if __name__ == "__main__":
     plot_geometry(blade_apc,
                   save_path=os.path.join(out_dir, "blade_geometry.png"))
 
-    # APC 7x5E (baseline) vs HQProp 7x4x3 (reference)
-    plot_geometry(blade_apc, blade_hqprop,
-                  save_path=os.path.join(out_dir, "apc7x5e_vs_hqprop.png"))
+    # APC 7x5E (baseline) vs APC 7x4E (lower pitch)
+    plot_geometry(blade_apc, blade_7x4e,
+                  save_path=os.path.join(out_dir, "apc_7x5e_vs_7x4e.png"))
+
+    # APC 7x5E (baseline) vs APC 7x6E (higher pitch)
+    plot_geometry(blade_apc, blade_7x6e,
+                  save_path=os.path.join(out_dir, "apc_7x5e_vs_7x6e.png"))
 
     # APC 7x5E unequal-spacing preview (Phase-2)
     blade_unequal = blade_apc.set_blade_angles([0.0, 115.0, 235.0])
@@ -232,5 +236,3 @@ if __name__ == "__main__":
 
     print("\nAPC 7x5E (3-blade) baseline summary:")
     blade_apc.summary()
-    print("\nHQProp 7x4x3 reference summary:")
-    blade_hqprop.summary()

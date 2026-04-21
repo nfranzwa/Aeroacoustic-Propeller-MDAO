@@ -1,7 +1,7 @@
 """
 Parametric blade geometry for quiet-prop.
 Defines blade stations (r/R, chord, twist, sweep, t/c, dihedral) for the
-APC 7x5E (3-blade) baseline and the HQProp 7x4x3 reference geometry.
+APC 7x5E (3-blade) baseline (Brandt & Selig 2011, AIAA 2011-1255).
 Supports 3-blade assemblies with arbitrary azimuthal spacing (unequal blade
 indexing for BPF coherence reduction).
 """
@@ -40,36 +40,6 @@ APC_7X5E_3BLADE = {
     "blade_angles_deg": np.array([0.0, 120.0, 240.0]),
 }
 
-
-# ---------------------------------------------------------------------------
-# HQProp 7x4x3 – retained as comparison reference only
-# ---------------------------------------------------------------------------
-
-HQPROP_7x4x3 = {
-    "name": "HQProp 7x4x3",
-    "diameter_m": 7 * 0.0254,       # 0.1778 m
-    "num_blades": 3,
-    "airfoil": "NACA4412",
-    "r_R": np.array([0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
-                     0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80,
-                     0.85, 0.90, 0.95, 1.00]),
-    "chord_R": np.array([0.130, 0.149, 0.163, 0.172, 0.178, 0.180, 0.179,
-                         0.175, 0.169, 0.161, 0.152, 0.141, 0.129, 0.116,
-                         0.102, 0.087, 0.067, 0.040]),
-    "twist_deg": np.array([34.0, 30.2, 27.0, 24.3, 22.0, 20.0, 18.3,
-                           16.8, 15.5, 14.3, 13.2, 12.2, 11.3, 10.5,
-                            9.7,  9.0,  8.3,  7.8]),
-    # NACA 4412 baseline: 12% from root, thinning toward tip
-    "tc_ratio": np.array([0.120, 0.120, 0.120, 0.120, 0.120, 0.120, 0.119,
-                          0.118, 0.117, 0.115, 0.113, 0.111, 0.108, 0.105,
-                          0.100, 0.095, 0.090, 0.080]),
-    # No sweep in baseline (HQProp is straight)
-    "sweep_R": np.zeros(18),
-    # No dihedral in baseline
-    "z_offset_R": np.zeros(18),
-    # Equal azimuthal spacing for 3 blades
-    "blade_angles_deg": np.array([0.0, 120.0, 240.0]),
-}
 
 
 class BladeGeometry:
@@ -238,28 +208,9 @@ def baseline_apc7x5e():
     )
 
 
-def baseline_hqprop():
-    """Return a BladeGeometry for the HQProp 7x4x3 (comparison reference)."""
-    g = HQPROP_7x4x3
-    return BladeGeometry(
-        diameter_m       = g["diameter_m"],
-        num_blades       = g["num_blades"],
-        r_R              = g["r_R"],
-        chord_R          = g["chord_R"],
-        twist_deg        = g["twist_deg"],
-        tc_ratio         = g["tc_ratio"],
-        sweep_R          = g["sweep_R"],
-        z_offset_R       = g["z_offset_R"],
-        blade_angles_deg = g["blade_angles_deg"],
-        airfoil          = g["airfoil"],
-    )
-
-
 if __name__ == "__main__":
     blade = baseline_apc7x5e()
     blade.summary()
-    print(f"\nHQProp 7x4x3 reference:")
-    baseline_hqprop().summary()
     print(f"\nUnequal spacing example [0, 115, 235]:")
     unequal = blade.set_blade_angles([0.0, 115.0, 235.0])
     print(f"  Imbalance: {unequal.imbalance_factor():.4f}")

@@ -139,37 +139,7 @@ _CATALOG = {
         "blade_angles_deg": np.array([0.0, 180.0]),
     },
 
-    # ------------------------------------------------------------------
-    # HQProp 7x4x3  (3-blade equivalent of the project baseline)
-    # Included so load_prop() can return the baseline in the same API
-    # ------------------------------------------------------------------
-    "HQProp_7x4x3": {
-        "diameter_m": 7 * 0.0254,
-        "num_blades": 3,
-        "airfoil": "NACA4412",
-        "r_R": np.array([0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
-                         0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80,
-                         0.85, 0.90, 0.95, 1.00]),
-        "chord_D": np.array([0.130, 0.149, 0.163, 0.172, 0.178, 0.180, 0.179,
-                             0.175, 0.169, 0.161, 0.152, 0.141, 0.129, 0.116,
-                             0.102, 0.087, 0.067, 0.040]) / 2.0,
-        # chord_R in original = chord_D / 2 because R = D/2
-        # stored as chord/D; will be scaled back below
-        "pitch_deg": np.array([34.0, 30.2, 27.0, 24.3, 22.0, 20.0, 18.3,
-                               16.8, 15.5, 14.3, 13.2, 12.2, 11.3, 10.5,
-                                9.7,  9.0,  8.3,  7.8]),
-        "tc_ratio": np.array([0.120, 0.120, 0.120, 0.120, 0.120, 0.120, 0.119,
-                              0.118, 0.117, 0.115, 0.113, 0.111, 0.108, 0.105,
-                              0.100, 0.095, 0.090, 0.080]),
-        "blade_angles_deg": np.array([0.0, 120.0, 240.0]),
-    },
 }
-
-# chord/D for HQProp was divided by 2 above to get chord/D;
-# correct: HQProp chord_R = chord/R = chord_D/D * D/R = chord_D * 2
-# Fix: the original HQProp has chord_R (= chord/R), not chord/D.
-# Re-store correctly as chord/D = chord_R / 2 (since R = D/2 => chord/D = chord_R/2)
-# This is already handled — the division by 2 above is correct.
 
 
 # ---------------------------------------------------------------------------
@@ -332,16 +302,6 @@ def _parse_uiuc_geom(text: str, name: str):
         blade_angles_deg = angles,
         airfoil          = "NACA4412",
     )
-
-
-# ---------------------------------------------------------------------------
-# Convenience: return baseline HQProp from blade_generator (no fetch)
-# ---------------------------------------------------------------------------
-
-def load_baseline_hqprop() -> BladeGeometry:
-    """Return HQProp 7x4x3 baseline — shortcut to blade_generator."""
-    from geometry.blade_generator import baseline_hqprop
-    return baseline_hqprop()
 
 
 # ---------------------------------------------------------------------------
