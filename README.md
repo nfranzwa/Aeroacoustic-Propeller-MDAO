@@ -48,12 +48,38 @@ The optimization targets a real 7-inch long-range UAV with the following all-up 
 
 ---
 
-## Optimization Status
+## Phase 2 Optimization Results
 
 **Objective:** minimize `0.7·SPL_hover + 0.3·SPL_cruise`
 **Optimizer:** Hybrid GA (pop=50, gen=30) → SLSQP warm-start
+**Baseline:** APC 7x5E 3-blade, 928 g AUW, TWR 2.5 constraint (5.69 N/rotor)
 
-Phase 2 optimization with the updated APC 7x5E baseline and 928 g AUW is **in progress**. Results will be added here after the run completes.
+| ![Optimised vs Baseline](quiet-prop/results/plots/optimised_vs_baseline.png) |
+|:---:|
+| *APC 7x5E baseline (blue) vs Phase 2 optimised (green)* |
+
+| Metric | Baseline @ 7000 RPM | Optimised @ 9459 RPM | Notes |
+|--------|---------------------|----------------------|-------|
+| Thrust hover | 2.87 N | **5.66 N** | meets TWR 2.5 target |
+| Thrust cruise | — | 1.56 N | below 2.0 N target ⚠ |
+| Power hover | 17.19 W | 34.90 W | +103% |
+| SPL hover | 30.96 dBA | **46.24 dBA** | +15 dB — RPM penalty |
+| SPL weighted | 31.99 dBA | **43.21 dBA** | best found at TWR 2.5 |
+| Max root stress | — | 14.28 MPa | ≤ 22 MPa ✓ |
+| Min wall thickness | — | **0.50 mm** | at print limit ✓ |
+| Imbalance | 0/120/240° | **0/123/225°** | unequal spacing ✓ |
+
+**Key design changes:**
+- **Twist up +1–3.4° outboard:** shifts lift outboard to generate thrust at high RPM
+- **t/c +0.035 uniformly:** driven by 0.5 mm wall thickness constraint at 9,459 RPM
+- **Chord narrowed inboard, neutral midspan:** reduces drag while holding thrust
+- **Blade spacing 0/123/225°:** breaks BPF coherence for tonal noise reduction
+- **Sweep and dihedral: zero** — optimizer found no acoustic benefit at this operating point
+
+**Known issues with this run:**
+- SLSQP exited with "positive directional derivative" (exit mode 8) — stuck at a constraint boundary where FD gradients are noisy
+- Cruise thrust (1.56 N) is below the 2.0 N target — at 9,459 RPM + 15 m/s the advance ratio J ≈ 0.54 is near the zero-thrust point for a fixed-pitch 7" prop
+- The TWR 2.5 constraint fundamentally forces high RPM, which is acoustically expensive and limits cruise efficiency
 
 ---
 

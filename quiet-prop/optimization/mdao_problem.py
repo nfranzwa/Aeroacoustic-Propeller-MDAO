@@ -619,5 +619,5 @@ def _print_design_vars(prob):
 
 
 if __name__ == "__main__":
-    # Uses physics-based defaults: 724g drone, TWR 2.5, RPM 6000 initial
+    # 928 g AUW, TWR 2.5 (5.69 N/rotor), RPM_HOVER_INIT = 7000, hybrid GA+SLSQP
     prob = run_optimization(use_hybrid=True)
