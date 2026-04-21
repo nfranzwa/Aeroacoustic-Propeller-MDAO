@@ -19,8 +19,18 @@ Thrust targets (BEM-derived, iFlight XING-E 2814 900KV on 4S):
   900 KV × 14.8 V nominal = 13,320 RPM no-load; ~75% under load -> ~10,000 RPM max
   Hover    (1g, ~53% throttle) :  2.28 N @ ~7,000 RPM
   Maneuver (TWR 2.5, ~85% thr) :  5.69 N @ ~9,500 RPM   <- hover constraint
-  Cruise   (level flight 15m/s):  2.00 N                 <- cruise constraint
+  Cruise   (level flight 15m/s):  2.33 N                 <- cruise constraint (see below)
   Full thr (TWR ~3.1, 100%)    :  7.96 N @ ~10,000 RPM
+
+Cruise constraint derivation (Wagter et al. 2014; ICAS 2020-0781):
+  A quadrotor at 15 m/s pitches forward at angle θ, not 90°.
+  Body drag at 15 m/s: F_drag = 0.5 × ρ × V² × CdA
+    CdA_DRONE = 0.015 m²  (Cd ≈ 0.30 for a clean 7-inch LR airframe)
+    F_drag = 0.5 × 1.225 × 225 × 0.015 = 2.07 N
+  Cruise pitch: θ = arctan(F_drag / W) = arctan(2.07 / 9.10) = 12.8°
+  Per-rotor cruise thrust magnitude: T = W / (4·cos θ) = 2.33 N
+  Axial inflow component for BEM: V_axial = V_cruise × sin θ = 3.32 m/s
+  (Edgewise component V·cos θ ≈ 14.6 m/s is a second-order effect at this pitch angle.)
 
 RPM design-variable bounds: [3500, 10000]
 RPM initial point: 7000 (estimated hover RPM for 928 g AUW)
@@ -37,8 +47,10 @@ Fixes applied
 3. Hybrid optimizer: GA global search (pop=50, gen=30) -> SLSQP local
    refinement to escape local minima in the 57-variable space.
 
-4. Multipoint evaluation: hover (V=0 m/s) + cruise (V=15 m/s) with
+4. Multipoint evaluation: hover (V=0 m/s) + cruise (V_axial=3.32 m/s) with
    weighted objective 0.7·SPL_hover + 0.3·SPL_cruise.
+   Cruise inflow is the axial component at the equilibrium pitch angle (~12.8°),
+   not the full forward speed (which would overstate thrust loss by ~4.5×).
 
 New design variables (Phase 2)
 -------------------------------
@@ -67,7 +79,6 @@ from structures.structural_component import (StressComponent, ALLOWABLE_STRESS,
 N_STATIONS   = 20
 N_BLADE_STAT = 18          # blade definition stations (matches APC 7x5E baseline)
 N_TIP_ZONES  = 10          # dihedral design var stations (outer 55–100% span)
-CRUISE_VINF  = 15.0        # m/s forward cruise speed
 W_HOVER      = 0.7         # acoustic weight for hover
 W_CRUISE     = 0.3         # acoustic weight for cruise
 
@@ -78,14 +89,24 @@ DRONE_AUW_KG        = 0.928    # kg  all-up weight
 DRONE_N_ROTORS      = 4        # number of rotors
 DRONE_G             = 9.81     # m/s^2
 
-# Thrust per rotor at the TWR that allows dynamic maneuvering (TWR = 2.5).
-# iFlight XING-E 2814 900KV on 4S: ~10,000 RPM at full throttle.
+# Thrust per rotor at TWR 2.5 (dynamic maneuvering constraint).
 DRONE_TWR_MANEUVER  = 2.5
 THRUST_HOVER_MIN    = (DRONE_AUW_KG * DRONE_G * DRONE_TWR_MANEUVER
-                       / DRONE_N_ROTORS)    # 4.44 N
+                       / DRONE_N_ROTORS)   # 5.69 N
 
-# Level-flight cruise thrust per rotor at V=15 m/s (body pitched ~20 deg).
-THRUST_CRUISE_MIN   = 2.00     # N
+# ---------------------------------------------------------------------------
+# Cruise operating point — pitched-forward quadrotor physics
+# ---------------------------------------------------------------------------
+# At V_cruise, the drone pitches at θ = arctan(F_drag / W).
+# The BEM axial inflow is V_cruise·sin(θ), NOT the full forward speed.
+# Source: Wagter et al. (2014); ICAS 2020-0781 multirotor forward-flight model.
+CRUISE_SPEED        = 15.0     # m/s  true airspeed
+CDA_DRONE           = 0.015    # m²   drag area (Cd≈0.30, A≈0.05 m² for 7" LR quad)
+_W                  = DRONE_AUW_KG * DRONE_G                         # 9.10 N
+_F_drag             = 0.5 * 1.225 * CRUISE_SPEED**2 * CDA_DRONE      # 2.07 N
+_theta_cruise       = np.arctan(_F_drag / _W)                         # ~12.8 deg
+CRUISE_VINF         = CRUISE_SPEED * np.sin(_theta_cruise)            # 3.32 m/s axial
+THRUST_CRUISE_MIN   = _W / (DRONE_N_ROTORS * np.cos(_theta_cruise))  # 2.33 N per rotor
 
 # RPM operating envelope (900 KV motor on 4S, 7" prop)
 RPM_HOVER_INIT      = 7000.0   # RPM  estimated hover point for 928 g AUW

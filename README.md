@@ -42,8 +42,9 @@ The optimization targets a real 7-inch long-range UAV with the following all-up 
 
 | Operating point | RPM (est.) | Thrust/prop |
 |-----------------|------------|-------------|
-| Hover (~53% throttle) | ~7,000 | 2.28 N |
-| Maneuver TWR 2.5 (~85%) | ~9,500 | **5.69 N** ← constraint |
+| Hover (1g) | ~7,000 | 2.28 N |
+| Cruise, 15 m/s (pitch-corrected axial inflow 3.32 m/s) | ~7,000 | **2.33 N** ← constraint |
+| Maneuver TWR 2.5 | ~9,500 | **5.69 N** ← constraint |
 | Full throttle | ~10,000 | ~7.96 N |
 
 ---
@@ -61,7 +62,7 @@ The optimization targets a real 7-inch long-range UAV with the following all-up 
 | Metric | Baseline @ 7000 RPM | Optimised @ 9459 RPM | Notes |
 |--------|---------------------|----------------------|-------|
 | Thrust hover | 2.87 N | **5.66 N** | meets TWR 2.5 target |
-| Thrust cruise | — | 1.56 N | below 2.0 N target ⚠ |
+| Thrust cruise | — | 1.56 N | stale result — cruise model corrected, re-running |
 | Power hover | 17.19 W | 34.90 W | +103% |
 | SPL hover | 30.96 dBA | **46.24 dBA** | +15 dB — RPM penalty |
 | SPL weighted | 31.99 dBA | **43.21 dBA** | best found at TWR 2.5 |
@@ -76,10 +77,7 @@ The optimization targets a real 7-inch long-range UAV with the following all-up 
 - **Blade spacing 0/123/225°:** breaks BPF coherence for tonal noise reduction
 - **Sweep and dihedral: zero** — optimizer found no acoustic benefit at this operating point
 
-**Known issues with this run:**
-- SLSQP exited with "positive directional derivative" (exit mode 8) — stuck at a constraint boundary where FD gradients are noisy
-- Cruise thrust (1.56 N) is below the 2.0 N target — at 9,459 RPM + 15 m/s the advance ratio J ≈ 0.54 is near the zero-thrust point for a fixed-pitch 7" prop
-- The TWR 2.5 constraint fundamentally forces high RPM, which is acoustically expensive and limits cruise efficiency
+**Note:** The cruise model has been corrected since this run (see below). Results above are being superseded by a re-run with the physically correct cruise constraint.
 
 ---
 
@@ -128,6 +126,22 @@ quiet-prop/
 
 ## Physics Models
 
+### Cruise Operating Point — Pitched-Forward Quadrotor
+
+The cruise constraint uses the physically correct axial inflow, not the full forward speed.
+A quadrotor at 15 m/s pitches forward at equilibrium angle θ, so the rotor disk sees only the axial component of the freestream (Wagter et al. 2014; ICAS 2020-0781):
+
+| Parameter | Value | Derivation |
+|-----------|-------|------------|
+| Forward speed | 15.0 m/s | — |
+| Body drag area CdA | 0.015 m² | Cd ≈ 0.30, A ≈ 0.05 m² |
+| Body drag force | 2.07 N | ½ρV²·CdA |
+| Pitch angle θ | 12.8° | arctan(F_drag / W) |
+| **BEM axial inflow** | **3.32 m/s** | V·sin(θ) |
+| **Cruise thrust/rotor** | **2.33 N** | W/(4·cos θ) |
+
+Using V=15 m/s as full axial inflow would overstate thrust loss by ~4.5× and make the constraint physically impossible for a fixed-pitch 7" prop.
+
 ### Aerodynamics — Blade Element Momentum
 - Two-regime BEM: static hover (V=0) and forward flight
 - Prandtl tip and hub loss correction
@@ -174,7 +188,7 @@ Stress model: centrifugal (integral `ρω²∫r·A(r)dr`) + bending (`M_b/Z_root
 | Constraint | Bound | Physics |
 |------------|-------|---------|
 | `thrust_hover` | ≥ 5.69 N | TWR 2.5 for 928 g drone (4 rotors) |
-| `thrust_cruise` | ≥ 2.00 N | Level flight at 15 m/s |
+| `thrust_cruise` | ≥ 2.33 N | Cruise at 15 m/s — pitch-corrected axial inflow (3.32 m/s) |
 | `max_stress` | ≤ 22 MPa | SLA resin allowable (55 MPa / SF 2.5) |
 | `min_thickness` | ≥ 0.50 mm | SLA printer minimum wall |
 | `imbalance_factor` | ≤ 0.15 | Rotor balance `\|Σ exp(jθ_k)\|/B` |

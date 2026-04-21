@@ -29,7 +29,7 @@ from acoustics.bpm_component import bpm_noise, BPMComponent
 from structures.structural_component import (compute_stress, ALLOWABLE_STRESS,
                                               MIN_PRINT_THICKNESS)
 from optimization.mdao_problem import (THRUST_HOVER_MIN, THRUST_CRUISE_MIN,
-                                       RPM_HOVER_INIT, DRONE_AUW_KG)
+                                       RPM_HOVER_INIT, DRONE_AUW_KG, CRUISE_VINF)
 import openmdao.api as om
 
 
@@ -64,12 +64,12 @@ def test_bem_static():
 # Test 2: BEM forward flight at cruise speed
 # ---------------------------------------------------------------------------
 def test_bem_forward():
-    print(f"\n--- Test 2: BEM forward flight (6000 RPM, 15 m/s) ---")
+    print(f"\n--- Test 2: BEM cruise (axial V={CRUISE_VINF:.2f} m/s, pitch-corrected) ---")
     blade = baseline_apc7x5e()
-    res   = bem_solve(blade, rpm=RPM_HOVER_INIT, v_inf=15.0, rho=1.225)
+    res   = bem_solve(blade, rpm=RPM_HOVER_INIT, v_inf=CRUISE_VINF, rho=1.225)
 
-    # At V=15 m/s advance ratio J~1, thrust can go slightly negative
-    ok  = _check("Thrust (N)",   res["thrust"],     -2.0, 4.0, "N")
+    # At axial inflow ~3.3 m/s the prop is barely off hover; thrust stays positive
+    ok  = _check("Thrust (N)",   res["thrust"],     1.5, 5.0, "N")
     ok &= _check("Efficiency",   res["efficiency"],  0.0, 1.0)
 
     print(f"  Thrust={res['thrust']:.3f} N  eta={res['efficiency']:.3f}  P={res['power']:.2f} W")
@@ -186,7 +186,7 @@ def test_drone_targets():
 
     ok  = _check("Drone weight (N)",         W,                 7.0,  12.0, "N")
     ok &= _check("Hover thrust target (N)",  THRUST_HOVER_MIN,  4.0,   7.0, "N")
-    ok &= _check("Cruise thrust target (N)", THRUST_CRUISE_MIN, 1.0,   4.0, "N")
+    ok &= _check("Cruise thrust target (N)", THRUST_CRUISE_MIN, 2.0,   3.0, "N")
     ok &= _check("RPM hover init",           RPM_HOVER_INIT,  5000.0, 9000.0, "RPM")
 
     # Confirm strong-blade starting point achieves thrust at feasible RPM
