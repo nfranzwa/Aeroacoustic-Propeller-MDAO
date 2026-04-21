@@ -13,7 +13,6 @@ venv/
 env/
 
 # Results / outputs
-results/plots/*.png
 results/plots/*.pdf
 results/*.csv
 results/*.npz
