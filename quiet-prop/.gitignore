@@ -12,6 +12,9 @@ build/
 venv/
 env/
 
+# OpenMDAO auto-generated report directories
+*_out/
+
 # Results / outputs
 results/plots/*.pdf
 results/*.csv

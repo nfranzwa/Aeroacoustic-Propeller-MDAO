@@ -440,12 +440,46 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
     SPL_total    = 10 * np.log10(
         10 ** (SPL_bb_a / 10) + 10 ** (SPL_tonal / 10) + 1e-300)
 
+    # --- Per-mechanism breakdown (for post-processing / noise_breakdown.py) ---
+    spec_tbl  = np.full(n_freqs, -200.0)
+    spec_lbl  = np.full(n_freqs, -200.0)
+    spec_leti = np.full(n_freqs, -200.0)
+    for i in range(N):
+        c     = float(chord_m[i])
+        vr    = float(v_rel[i])
+        aoa_i = float(aoa_deg[i])
+        dr_i  = float(dr_arr[i])
+        xtr_i = float(x_tr_c[i])
+
+        w_turb = 1.0 - xtr_i
+        if w_turb > 0.01:
+            s = _tbl_te_spl(c, vr, aoa_i, dr_i, r_obs, xtr_i)
+            spec_tbl = 10 * np.log10(10**(spec_tbl/10) + w_turb * 10**(s/10) + 1e-300)
+        if xtr_i > 0.30:
+            s = _lbl_vs_spl(c, vr, aoa_i, dr_i, r_obs)
+            spec_lbl = 10 * np.log10(10**(spec_lbl/10) + xtr_i * 10**(s/10) + 1e-300)
+        s = _amiet_leti_spl(c, vr, dr_i, r_obs, turb_intensity, turb_length_scale,
+                             rho, cos_sweep=float(cos_sweep_arr[i]))
+        spec_leti = 10 * np.log10(10**(spec_leti/10) + 10**(s/10) + 1e-300)
+
+    def _dba(spec):
+        return 10 * np.log10(np.sum(10**((spec + A_WEIGHT)/10)) + 1e-300)
+
     return {
         "SPL_total":     SPL_total,
         "SPL_broadband": SPL_broadband,
         "SPL_tonal":     SPL_tonal,
         "freq":          THIRD_OCT_FREQS.copy(),
         "SPL_spectrum":  SPL_spectrum,
+        # per-mechanism A-weighted totals
+        "SPL_tbl_te_dBA":  _dba(spec_tbl),
+        "SPL_lbl_vs_dBA":  _dba(spec_lbl),
+        "SPL_leti_dBA":    _dba(spec_leti),
+        "SPL_bvi_dBA":     SPL_tonal,
+        # per-mechanism spectra (linear, not A-weighted)
+        "spec_tbl":   spec_tbl,
+        "spec_lbl":   spec_lbl,
+        "spec_leti":  spec_leti,
     }
 
 
@@ -459,6 +493,7 @@ class BPMComponent(om.ExplicitComponent):
         self.options.declare("blade",      default=None)
         self.options.declare("n_stations", default=20)
         self.options.declare("r_obs",      default=1.0)
+        self.options.declare("fd_step",    default=3e-4)
 
     def setup(self):
         self._blade = self.options["blade"] or baseline_apc7x5e()
@@ -489,7 +524,7 @@ class BPMComponent(om.ExplicitComponent):
         self.add_output("freq",          val=THIRD_OCT_FREQS.copy(), units="Hz")
 
     def setup_partials(self):
-        self.declare_partials("*", "*", method="fd", step=1e-4)
+        self.declare_partials("*", "*", method="fd", step=self.options["fd_step"])
 
     def compute(self, inputs, outputs):
         res = bpm_noise(

@@ -271,6 +271,7 @@ class CCBladeComponent(om.ExplicitComponent):
     def initialize(self):
         self.options.declare("blade",      default=None)
         self.options.declare("n_stations", default=20)
+        self.options.declare("fd_step",    default=3e-4)
 
     def setup(self):
         self._blade = self.options["blade"] or baseline_apc7x5e()
@@ -297,7 +298,7 @@ class CCBladeComponent(om.ExplicitComponent):
         self.add_output("x_tr_c",  val=np.ones(N))   # transition location
 
     def setup_partials(self):
-        self.declare_partials("*", "*", method="fd", step=1e-4)
+        self.declare_partials("*", "*", method="fd", step=self.options["fd_step"])
 
     def compute(self, inputs, outputs):
         res = bem_solve(self._blade,

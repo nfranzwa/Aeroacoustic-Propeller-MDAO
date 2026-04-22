@@ -116,9 +116,9 @@ def test_structural():
                          thrust=1.615, rpm=RPM_HOVER_INIT,
                          num_blades=blade.num_blades)
 
-    ok  = _check("Max stress (MPa)",   res["max_stress"] / 1e6,  0.0, 22.0, "MPa")
-    ok &= _check("sigma_c (MPa)",      res["sigma_c"] / 1e6,     0.0, 20.0, "MPa")
-    ok &= _check("sigma_b (MPa)",      res["sigma_b"] / 1e6,     0.0, 20.0, "MPa")
+    ok  = _check("Max stress (MPa)",   res["max_stress"] / 1e6,  0.0, 14.3, "MPa")
+    ok &= _check("sigma_c (MPa)",      res["sigma_c"] / 1e6,     0.0, 12.0, "MPa")
+    ok &= _check("sigma_b (MPa)",      res["sigma_b"] / 1e6,     0.0, 12.0, "MPa")
     # Baseline tip wall 0.28 mm is intentionally below the 0.5 mm print limit
     ok &= _check("Min thickness (mm)", res["min_thickness"] * 1e3, 0.1, 1.0, "mm")
 

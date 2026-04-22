@@ -81,10 +81,11 @@ def _setup_ax(ax, title, xlabel, ylabel):
     ax.grid(True, color=SUBTLE, linewidth=0.4, alpha=0.5)
 
 
-def plot_geometry(blade_base, blade_opt=None, save_path=None, show=False):
+def plot_geometry(blade_base, blade_opt=None, save_path=None, show=False,
+                  opt_label="Comparison"):
     blades  = [blade_base] + ([blade_opt] if blade_opt else [])
-    labels  = ["APC 7x5E (baseline)"] + (["Comparison"] if blade_opt else [])
-    colours = [BLUE]       + ([GREEN]       if blade_opt else [])
+    labels  = ["APC 7x5E (baseline)"] + ([opt_label] if blade_opt else [])
+    colours = [BLUE]       + ([GREEN]    if blade_opt else [])
 
     fig = plt.figure(figsize=(18, 11), facecolor=BG)
     fig.suptitle("Propeller Blade Geometry – Aeroacoustic MDAO",

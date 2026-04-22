@@ -2,7 +2,7 @@
 Structural stress component for propeller blade.
 
 Computes centrifugal root stress and bending root stress from thrust,
-constraining against SLA resin yield strength.
+constraining against resin allowable stress.
 
 Physics
 -------
@@ -18,16 +18,29 @@ Bending moment at root (one blade, thrust load):
 
 Max stress: sigma_max = sigma_c + sigma_b
 Min physical thickness: min(chord(r) * tc(r)) across span
+
+Material: Siraya Tech Blu Tough (MSLA consumer resin)
+-------------------------------------------------------
+  UTS            : 50 MPa  (manufacturer TDS)
+  Elongation     : 32 %    (sufficient for bending without brittle fracture)
+  Flexural mod.  : 1.75 GPa
+  HDT            : 70 °C   (adequate for motor-heated air in hover)
+  Density        : 1100 kg/m³
+  Available      : Amazon / siraya.tech (~$35-46/kg)
+
+Factor of safety = 3.5 (cyclic/fatigue per FAA AC 35.37-1B guidance for
+rotating propeller blades under combined centrifugal + bending loads).
+Allowable = 50 / 3.5 = 14.3 MPa.
 """
 
 import numpy as np
 import openmdao.api as om
 
-# Material: Formlabs Standard SLA resin
-RHO_RESIN       = 1200.0   # kg/m3
-YIELD_STRENGTH  = 55e6     # Pa  (tensile yield)
-SAFETY_FACTOR   = 2.5
-ALLOWABLE_STRESS = YIELD_STRENGTH / SAFETY_FACTOR   # 22 MPa
+# Material: Siraya Tech Blu Tough (consumer MSLA resin)
+RHO_RESIN        = 1100.0   # kg/m³  (cured density)
+UTS              = 50e6     # Pa     (tensile ultimate strength, manufacturer TDS)
+SAFETY_FACTOR    = 3.5      # fatigue/cyclic loading, FAA AC 35.37-1B
+ALLOWABLE_STRESS = UTS / SAFETY_FACTOR   # 14.3 MPa
 
 # Printer minimum wall: 0.5 mm
 MIN_PRINT_THICKNESS = 0.5e-3   # m
@@ -96,7 +109,7 @@ class StressComponent(om.ExplicitComponent):
 
     Outputs
     -------
-    max_stress    : Pa   Root stress (centrifugal + bending); constrain <= 22 MPa
+    max_stress    : Pa   Root stress (centrifugal + bending); constrain <= 14.3 MPa
     min_thickness : m    Minimum wall thickness; constrain >= 0.5 mm
     """
 
@@ -104,6 +117,7 @@ class StressComponent(om.ExplicitComponent):
         self.options.declare("blade",      default=None)
         self.options.declare("n_stations", default=20)
         self.options.declare("num_blades", default=3)
+        self.options.declare("fd_step",    default=1e-5)
 
     def setup(self):
         from geometry.blade_generator import baseline_apc7x5e
@@ -123,7 +137,7 @@ class StressComponent(om.ExplicitComponent):
         self.add_output("min_thickness", val=0.0, units="m")
 
     def setup_partials(self):
-        self.declare_partials("*", "*", method="fd", step=1e-5)
+        self.declare_partials("*", "*", method="fd", step=self.options["fd_step"])
 
     def compute(self, inputs, outputs):
         res = compute_stress(
