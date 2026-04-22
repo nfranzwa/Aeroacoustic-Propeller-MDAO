@@ -556,7 +556,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
 
     # ---- Design variables (21 active: 1 rpm + 4×5 spline CPs) -------------
     prob.model.add_design_var("rpm",            lower=RPM_LOWER, upper=RPM_UPPER, units="rpm")
-    prob.model.add_design_var("delta_twist_cp", lower=-5.0,  upper=5.0)
+    prob.model.add_design_var("delta_twist_cp", lower=-6.0,  upper=6.0)
     prob.model.add_design_var("delta_chord_cp", lower=-0.05, upper=0.03)
     prob.model.add_design_var("sweep_cp",       lower=0.0,   upper=0.12)
     prob.model.add_design_var("delta_tc_cp",    lower=-0.03, upper=0.04)
@@ -670,11 +670,9 @@ def run_multistart(n_starts=8, thrust_min_hover=THRUST_HOVER_MIN,
             dtc_cp = np.zeros(N_CP)
         else:
             rpm_i  = float(rng.uniform(6000.0, 8500.0))
-            # Control points: small random values biased toward noise-reducing directions.
-            # Spline guarantees smooth distributions at all starting points.
             dt_cp  = rng.uniform(-2.0, 2.0, N_CP)
-            dc_cp  = rng.uniform(-0.05, 0.01, N_CP)   # bias thin chord
-            sw_cp  = np.sort(rng.uniform(0.0, 0.10, N_CP))  # monotone sweep
+            dc_cp  = rng.uniform(-0.05, 0.01, N_CP)
+            sw_cp  = np.sort(rng.uniform(0.0, 0.10, N_CP))
             dtc_cp = rng.uniform(-0.02, 0.02, N_CP)
 
         prob_i = build_problem(thrust_min_hover=thrust_min_hover,
