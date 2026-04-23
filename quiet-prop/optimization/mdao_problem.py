@@ -171,7 +171,7 @@ class GeometryFullComponent(om.ExplicitComponent):
         self.add_output("tc_ratio",         val=tc0)
         self.add_output("sweep_m",          val=np.zeros(N), units="m")
         self.add_output("z_offset_m",       val=np.zeros(N), units="m")
-        self.add_output("blade_angles_deg", val=np.array([0.0, 120.0, 240.0]))
+        self.add_output("blade_angles_deg", val=np.asarray(blade.blade_angles_deg, dtype=float))
         self.add_output("phys_thick_diff",  val=np.zeros(N - 1))
         self.add_output("camber",           val=camber0)
 
@@ -198,10 +198,7 @@ class GeometryFullComponent(om.ExplicitComponent):
                      .perturb_chord(dc_def)
                      .perturb_tc(dtc_def)
                      .set_sweep(sw_def)
-                     .set_camber(blade.camber_dist + dcam_def)
-                     .set_blade_angles([0.0,
-                                        float(inputs["theta2"][0]),
-                                        float(inputs["theta3"][0])]))
+                     .set_camber(blade.camber_dist + dcam_def))
 
         r_m, chord_m, twist_deg, tc, sw, zof = perturbed.get_full_stations(N)
 
@@ -346,8 +343,13 @@ class SmoothnessComponent(om.ExplicitComponent):
 class BalanceComponent(om.ExplicitComponent):
     """Computes rotor static imbalance factor from blade azimuthal positions."""
 
+    def initialize(self):
+        self.options.declare("num_blades", default=3)
+
     def setup(self):
-        self.add_input("blade_angles_deg", val=np.array([0.0, 120.0, 240.0]))
+        B = self.options["num_blades"]
+        angles = np.linspace(0, 360, B, endpoint=False)
+        self.add_input("blade_angles_deg", val=angles)
         # imbalance_factor = |Σ exp(j*theta_k)| / B  ∈ [0, 1]; want <= max_imbalance
         self.add_output("imbalance_factor", val=0.0)
 
@@ -369,7 +371,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
                   rpm_init=RPM_HOVER_INIT, rho=1.225, max_imbalance=0.05,
                   fd_step=3e-4, optimizer="SLSQP",
                   twist_smooth_max=2.0, chord_smooth_max=0.02,
-                  geometry_dvs=True, le_type="sawtooth"):
+                  geometry_dvs=True, le_type="sawtooth", num_blades=3):
     """
     Assemble and return the full Phase-2 OpenMDAO Problem.
 
@@ -381,7 +383,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
                 -> balance
           -> obj (WeightedSPLComponent)
     """
-    blade   = baseline_apc7x5e()
+    blade   = baseline_apc7x5e(num_blades=num_blades)
     n_def   = N_BLADE_STAT
 
     prob  = om.Problem()
@@ -400,6 +402,9 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     ivc.add_output("delta_camber_cp",  val=np.zeros(N_CP))
     ivc.add_output("h_s_cp",          val=np.zeros(N_CP), units="m")
     ivc.add_output("h_LE_cp",         val=np.zeros(N_CP), units="m")
+    ivc.add_output("A_tub_cp",        val=np.zeros(N_CP), units="m")
+    ivc.add_output("lambda_LE_cp",    val=np.full(N_CP, 2e-3), units="m")
+    ivc.add_output("lambda_tub_cp",   val=np.full(N_CP, 2e-3), units="m")
     ivc.add_output("theta2",           val=120.0)
     ivc.add_output("theta3",           val=240.0)
 
@@ -460,6 +465,9 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
             ("dQ_dr",            "dQ_dr_hover"),
             "h_s_cp",
             "h_LE_cp",
+            "A_tub_cp",
+            "lambda_LE_cp",
+            "lambda_tub_cp",
         ],
         promotes_outputs=[
             ("SPL_total",     "SPL_hover"),
@@ -509,6 +517,9 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
             ("dQ_dr",            "dQ_dr_cruise"),
             "h_s_cp",
             "h_LE_cp",
+            "A_tub_cp",
+            "lambda_LE_cp",
+            "lambda_tub_cp",
         ],
         promotes_outputs=[
             ("SPL_total",     "SPL_cruise"),
@@ -531,7 +542,7 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     # ---- Rotor balance ---------------------------------------------------
     model.add_subsystem(
         "balance",
-        BalanceComponent(),
+        BalanceComponent(num_blades=blade.num_blades),
         promotes_inputs=["blade_angles_deg"],
         promotes_outputs=["imbalance_factor"],
     )
@@ -609,7 +620,14 @@ def build_problem(thrust_min_hover=THRUST_HOVER_MIN,
     # Upper bound: 15% of local chord — keeps teeth structurally intact.
     _, chord_cp_le, _ = blade.get_stations(N_CP)
     h_LE_max_cp = 0.15 * chord_cp_le   # metres, per CP
-    prob.model.add_design_var("h_LE_cp", lower=0.0, upper=h_LE_max_cp, units="m")
+    # LE sawtooth + tubercle amplitudes (15% chord printer bound)
+    prob.model.add_design_var("h_LE_cp",  lower=0.0, upper=h_LE_max_cp, units="m")
+    prob.model.add_design_var("A_tub_cp", lower=0.0, upper=h_LE_max_cp, units="m")
+    if not geometry_dvs:
+        # Wavelength DVs confirmed useless in full-geometry MDAO (lambda=2h optimal);
+        # only include in LE-only mode for academic verification.
+        prob.model.add_design_var("lambda_LE_cp",  lower=0.0004, upper=0.015, units="m")
+        prob.model.add_design_var("lambda_tub_cp", lower=0.0004, upper=0.015, units="m")
     # Blade angles locked at 120°/240° — unequal spacing tested but the imbalance
     # force at 0.05 factor corresponds to ~12 N rotating vibration (G250 quality),
     # destroying motor bearings before any acoustic benefit is realised.
@@ -685,7 +703,7 @@ def _start_worker(args):
     import os, sys
     (i, rpm_i, dt_cp, dc_cp, sw_cp, dtc_cp, dcam_cp, hs_cp,
      thrust_min_hover, thrust_min_cruise, rho, fd_step, optimizer,
-     plot_feasible, plot_dir) = args
+     plot_feasible, plot_dir, num_blades) = args
 
     # Disable OpenMDAO HTML reports (all workers share the same dir → collision)
     os.environ["OPENMDAO_REPORTS"] = "0"
@@ -699,7 +717,8 @@ def _start_worker(args):
         prob_i = build_problem(thrust_min_hover=thrust_min_hover,
                                thrust_min_cruise=thrust_min_cruise,
                                rpm_init=rpm_i, rho=rho,
-                               fd_step=fd_step, optimizer=optimizer)
+                               fd_step=fd_step, optimizer=optimizer,
+                               num_blades=num_blades)
         prob_i.setup()
         prob_i.set_val("rpm",              rpm_i)
         prob_i.set_val("delta_twist_cp",   dt_cp)
@@ -770,7 +789,7 @@ def run_multistart(n_starts=8, thrust_min_hover=THRUST_HOVER_MIN,
                    fd_step=3e-4, optimizer="SLSQP",
                    return_all=False, start_from=0,
                    plot_feasible=False, plot_dir=None,
-                   n_jobs=1, seed_dvs=None):
+                   n_jobs=1, seed_dvs=None, num_blades=3):
     """
     Run SLSQP from n_starts starting points; return the best result.
 
@@ -832,7 +851,7 @@ def run_multistart(n_starts=8, thrust_min_hover=THRUST_HOVER_MIN,
     worker_args = [
         (i, rpm_i, dt_cp, dc_cp, sw_cp, dtc_cp, dcam_cp, hs_cp,
          thrust_min_hover, thrust_min_cruise, rho, fd_step, optimizer,
-         plot_feasible, _plot_dir)
+         plot_feasible, _plot_dir, num_blades)
         for (i, (rpm_i, dt_cp, dc_cp, sw_cp, dtc_cp, dcam_cp, hs_cp))
         in zip(active_indices, active_points)
     ]
@@ -1044,9 +1063,9 @@ def _le_start_worker(args):
     DVs: rpm, h_LE_cp (5 CPs). Geometry frozen at APC 7x5E baseline.
     """
     import os, sys
-    (i, rpm_i, h_LE_cp_i,
+    (i, rpm_i, h_LE_cp_i, a_tub_cp_i, lam_LE_i, lam_tub_i,
      thrust_min_hover, thrust_min_cruise, rho, fd_step, optimizer,
-     le_type) = args
+     le_type, num_blades) = args
 
     os.environ["OPENMDAO_REPORTS"] = "0"
     devnull = open(os.devnull, "w")
@@ -1060,10 +1079,14 @@ def _le_start_worker(args):
             rpm_init=rpm_i, rho=rho,
             fd_step=fd_step, optimizer=optimizer,
             geometry_dvs=False, le_type=le_type,
+            num_blades=num_blades,
         )
         prob_i.setup()
-        prob_i.set_val("rpm",      rpm_i)
-        prob_i.set_val("h_LE_cp",  h_LE_cp_i)
+        prob_i.set_val("rpm",           rpm_i)
+        prob_i.set_val("h_LE_cp",       h_LE_cp_i)
+        prob_i.set_val("A_tub_cp",      a_tub_cp_i)
+        prob_i.set_val("lambda_LE_cp",  lam_LE_i)
+        prob_i.set_val("lambda_tub_cp", lam_tub_i)
         prob_i.run_driver()
 
         spl_i      = float(prob_i.get_val("SPL_weighted")[0])
@@ -1081,8 +1104,11 @@ def _le_start_worker(args):
             "max_stress":    stress_i,
             "feasible":      thrust_ok,
             "dvs": {
-                "rpm":      float(prob_i.get_val("rpm")[0]),
-                "h_LE_cp":  prob_i.get_val("h_LE_cp").copy(),
+                "rpm":           float(prob_i.get_val("rpm")[0]),
+                "h_LE_cp":       prob_i.get_val("h_LE_cp").copy(),
+                "A_tub_cp":      prob_i.get_val("A_tub_cp").copy(),
+                "lambda_LE_cp":  prob_i.get_val("lambda_LE_cp").copy(),
+                "lambda_tub_cp": prob_i.get_val("lambda_tub_cp").copy(),
             },
         }
     finally:
@@ -1098,7 +1124,7 @@ def run_le_multistart(n_starts=8,
                       thrust_min_cruise=THRUST_CRUISE_MIN,
                       rho=1.225, seed=42, verbose=True,
                       fd_step=3e-4, optimizer="SLSQP",
-                      n_jobs=1, le_type="sawtooth"):
+                      n_jobs=1, le_type="sawtooth", num_blades=3):
     """
     Multistart SLSQP optimising RPM + h_LE_cp on the fixed baseline geometry.
 
@@ -1113,22 +1139,23 @@ def run_le_multistart(n_starts=8,
     h_LE_max_cp = 0.15 * chord_cp_le    # metres
 
     start_points = []
-    # Start 0: no serrations, hover RPM
-    start_points.append((RPM_HOVER_INIT, np.zeros(N_CP)))
-    # Start 1: 50% of max serrations uniform
-    start_points.append((RPM_HOVER_INIT, 0.5 * h_LE_max_cp))
-    # Start 2: maximum serrations, baseline RPM
-    start_points.append((RPM_HOVER_INIT, h_LE_max_cp.copy()))
-    # Remaining: random RPM + random spanwise h_LE within per-CP bounds
-    for _ in range(3, n_starts):
-        rpm_i   = float(rng.uniform(5500.0, 8500.0))
-        h_LE_i  = rng.uniform(0.0, 1.0, N_CP) * h_LE_max_cp
-        start_points.append((rpm_i, h_LE_i))
+    lam0 = np.full(N_CP, 2e-3)
+    start_points.append((RPM_HOVER_INIT, np.zeros(N_CP), np.zeros(N_CP), lam0, lam0))
+    start_points.append((RPM_HOVER_INIT, h_LE_max_cp, np.zeros(N_CP), 2*h_LE_max_cp, lam0))
+    start_points.append((RPM_HOVER_INIT, np.zeros(N_CP), h_LE_max_cp, lam0, 2*h_LE_max_cp))
+    start_points.append((RPM_HOVER_INIT, h_LE_max_cp.copy(), h_LE_max_cp.copy(), 2*h_LE_max_cp, 2*h_LE_max_cp))
+    for _ in range(4, n_starts):
+        rpm_i    = float(rng.uniform(5500.0, 8500.0))
+        h_LE_i   = rng.uniform(0.0, 1.0, N_CP) * h_LE_max_cp
+        a_tub_i  = rng.uniform(0.0, 1.0, N_CP) * h_LE_max_cp
+        lam_LE_i = rng.uniform(0.0004, 0.010, N_CP)
+        lam_ti   = rng.uniform(0.0004, 0.010, N_CP)
+        start_points.append((rpm_i, h_LE_i, a_tub_i, lam_LE_i, lam_ti))
 
     worker_args = [
-        (i, rpm_i, h_LE_cp_i,
-         thrust_min_hover, thrust_min_cruise, rho, fd_step, optimizer, le_type)
-        for i, (rpm_i, h_LE_cp_i) in enumerate(start_points)
+        (i, rpm_i, h_LE_cp_i, a_tub_cp_i, lam_LE_i, lam_tub_i,
+         thrust_min_hover, thrust_min_cruise, rho, fd_step, optimizer, le_type, num_blades)
+        for i, (rpm_i, h_LE_cp_i, a_tub_cp_i, lam_LE_i, lam_tub_i) in enumerate(start_points)
     ]
 
     if verbose:
@@ -1146,7 +1173,7 @@ def run_le_multistart(n_starts=8,
                 h_mean = r["dvs"]["h_LE_cp"].mean() * 1000
                 print(f"  [start {r['start']}] SPL={r['spl']:.2f} dBA  "
                       f"RPM={r['dvs']['rpm']:.0f}  "
-                      f"h_LE_mean={h_mean:.2f} mm  "
+                      f"h_LE_mean={h_mean:.2f} mm  A_tub_mean={r["dvs"]["A_tub_cp"].mean()*1000:.2f} mm  "
                       f"T_hov={r['thrust_hover']:.3f} N{tag}")
             if r["feasible"] and r["spl"] < best_spl:
                 best_spl = r["spl"]
@@ -1410,9 +1437,11 @@ def _print_design_vars(prob):
     print(f"  delta_tc_cp       : {np.round(_g('delta_tc_cp'), 4)}")
     print(f"  delta_camber_cp   : {np.round(_g('delta_camber_cp'), 4)}")
     h_s_mm  = _g('h_s_cp')  * 1000
-    h_LE_mm = _g('h_LE_cp') * 1000
+    h_LE_mm  = _g('h_LE_cp')  * 1000
+    a_tub_mm = _g('A_tub_cp') * 1000
     print(f"  h_s_cp  (mm)      : {np.round(h_s_mm,  3)}")
     print(f"  h_LE_cp (mm)      : {np.round(h_LE_mm, 3)}")
+    print(f"  A_tub_cp(mm)      : {np.round(a_tub_mm,3)}")
     try:
         th2 = prob.get_val('theta2')[0]; th3 = prob.get_val('theta3')[0]
         print(f"  theta2/theta3     : {th2:.2f} / {th3:.2f} deg")
@@ -1438,6 +1467,8 @@ if __name__ == "__main__":
     parser.add_argument("--le-type",     type=str, default="sawtooth",
                         choices=["sawtooth", "tubercle"],
                         help="LE serration model (sawtooth=Lyu 2016, tubercle=Chaitanya 2017)")
+    parser.add_argument("--blades",      type=int, default=3,
+                        help="Number of rotor blades (2, 3, 4, 5)")
     args = parser.parse_args()
 
     # ---- Known-best seed points (used when --seed-best is passed) ----------------
@@ -1490,6 +1521,7 @@ if __name__ == "__main__":
             fd_step=args.fd_step,
             n_jobs=args.jobs,
             le_type=args.le_type,
+            num_blades=args.blades,
         )
         feasible = [r for r in all_results if r["feasible"]]
         print(f"\n{len(feasible)}/{len(all_results)} starts feasible")
@@ -1504,6 +1536,7 @@ if __name__ == "__main__":
         plot_feasible=args.plot_starts,
         n_jobs=args.jobs,
         seed_dvs=_SEED_DVS if args.seed_best else None,
+        num_blades=args.blades,
     )
 
     # Report best infeasible start

@@ -478,7 +478,8 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
               turb_intensity=0.005, turb_length_scale=0.01,
               sweep_m=None, dT_dr=None, dQ_dr=None,
               turb_loading_coeff=0.03, h_s=None,
-              h_LE=None, le_type="sawtooth"):
+              h_LE=None, A_tub=None,
+              lambda_LE=None, lambda_tub=None):
     """
     Compute SPL spectrum (BPM broadband + Amiet LETI).
 
@@ -547,34 +548,66 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
               * Phi_v / (4.0 * np.pi ** 2 * r_obs ** 2)
               * cs_v ** 4)                            # (N, n_freqs)
 
-    # LE serration / tubercle reduction on LETI (dominant UAV noise source).
+    # LE combined treatment: sawtooth serrations + sinusoidal tubercles.
     #
-    # Sawtooth LE  (Lyu et al. 2016, compact limit):
-    #   G = sinc²(f · h_LE / v_rel)
-    #   sinc(x) = sin(πx)/(πx)  →  first zero at f·h_LE/v_rel = 1
+    # The two mechanisms operate at different spanwise length scales and can
+    # coexist physically: fine sawtooth (h_LE ~ 1-4 mm, lambda = 2*h_LE) riding
+    # on a large sinusoidal LE wave (A_tub ~ 2-4 mm, lambda_tub >> lambda_s).
+    # Their LETI reductions multiply because each scatters a different wavenumber
+    # band of the incoming turbulence spectrum.
     #
-    # Sinusoidal LE / tubercles  (Chaitanya et al. 2017, compact approximation):
-    #   G = J₀²(π · f · h_LE / v_rel)
-    #   J₀ first zero at argument ≈ 2.405  →  h_LE ≈ 2.405·v_rel/(π·f)
+    # Sawtooth  (Lyu et al. 2016, compact limit):
+    #   G_s = sinc²(f·h_LE / U_c),  U_c = 0.7·v_rel
     #
-    # Both models approach 1 at h_LE→0 and reduce monotonically in the first lobe.
-    # Typical optimum: h_LE ~ v_rel / (2f_peak), with f_peak ≈ 3–8 kHz for UAV props.
-    if h_LE is not None:
-        h_LE_arr = np.asarray(h_LE, dtype=float)
-        if h_LE_arr.ndim == 0:
-            h_LE_arr = np.full(N, float(h_LE_arr))
-        h_LE_v = np.maximum(h_LE_arr, 0.0)[:, np.newaxis]  # (N, 1)
-        St_v   = f_v * h_LE_v / vrel_v                      # (N, n_freqs)  St = f·h/v
+    # Tubercle  (Chaitanya et al. 2017, compact approximation):
+    #   G_t = J₀²(π·f·A_tub / U_c)
+    #
+    # Combined: G_total = G_s × G_t (independent scattering channels)
+    if h_LE is not None or A_tub is not None:
+        G_total_v = np.ones((N, len(THIRD_OCT_FREQS)))
 
-        if le_type == "tubercle":
-            # Sinusoidal LE: J₀²(π·St)
-            G_LE_v = _bessel_j(0, np.pi * St_v) ** 2
-        else:
-            # Sawtooth LE (default): sinc²(St), np.sinc(x) = sin(πx)/(πx)
-            G_LE_v = np.sinc(St_v) ** 2
+        if h_LE is not None:
+            h_arr  = np.asarray(h_LE, dtype=float)
+            if h_arr.ndim == 0:
+                h_arr = np.full(N, float(h_arr))
+            h_v    = np.maximum(h_arr, 0.0)[:, np.newaxis]   # (N,1)
+            St_s   = f_v * h_v / vrel_v                       # (N, n_freqs)
+            G_s    = np.maximum(np.sinc(St_s) ** 2, 1e-3)
 
-        G_LE_v = np.maximum(G_LE_v, 1e-3)   # floor at −30 dB; avoids log(0)
-        Spp_v  = Spp_v * G_LE_v
+            if lambda_LE is not None:
+                # Aspect-ratio correction: Chaitanya et al. (2017) empirical fit.
+                # Gamma(h/lambda) peaks at h/lambda = 0.5, sigma = 0.3.
+                # Applied as: G = 1 - Gamma*(1 - sinc²) so G->1 when h->0.
+                lam_arr = np.asarray(lambda_LE, dtype=float)
+                if lam_arr.ndim == 0:
+                    lam_arr = np.full(N, float(lam_arr))
+                ratio_s = h_arr / np.maximum(lam_arr, 1e-6)  # (N,)
+                gamma_s = np.exp(-((ratio_s - 0.5) / 0.3) ** 2)[:, np.newaxis]
+                G_s     = np.maximum(1.0 - gamma_s * (1.0 - G_s), 1e-3)
+
+            G_total_v *= G_s
+
+        if A_tub is not None:
+            a_arr  = np.asarray(A_tub, dtype=float)
+            if a_arr.ndim == 0:
+                a_arr = np.full(N, float(a_arr))
+            a_v    = np.maximum(a_arr, 0.0)[:, np.newaxis]
+            St_t   = f_v * a_v / vrel_v
+            G_t    = np.maximum(_bessel_j(0, np.pi * St_t) ** 2, 1e-3)
+
+            if lambda_tub is not None:
+                # Tubercle aspect-ratio correction peaks at A/lambda = 0.4.
+                # Applied as: G = 1 - Gamma*(1 - J0²) so G->1 when A->0.
+                lam_arr = np.asarray(lambda_tub, dtype=float)
+                if lam_arr.ndim == 0:
+                    lam_arr = np.full(N, float(lam_arr))
+                ratio_t = a_arr / np.maximum(lam_arr, 1e-6)  # (N,)
+                gamma_t = np.exp(-((ratio_t - 0.4) / 0.25) ** 2)[:, np.newaxis]
+                G_t     = np.maximum(1.0 - gamma_t * (1.0 - G_t), 1e-3)
+
+            G_total_v *= G_t
+
+        Spp_v = Spp_v * G_total_v
 
     leti_lin = np.maximum(Spp_v * df_v / P_REF ** 2, 0.0)  # (N, n_freqs), linear (p/Pref)²
 
@@ -703,9 +736,13 @@ class BPMComponent(om.ExplicitComponent):
         self.add_input("dT_dr",  val=np.zeros(N), units="N/m")
         self.add_input("dQ_dr",  val=np.zeros(N), units="N*m/m")
         # TE serration depth (inert at UAV Re; TBL-TE = 0)
-        self.add_input("h_s_cp",  val=np.zeros(n_cp), units="m")
-        # LE serration / tubercle amplitude (directly reduces LETI — dominant source)
-        self.add_input("h_LE_cp", val=np.zeros(n_cp), units="m")
+        self.add_input("h_s_cp",   val=np.zeros(n_cp), units="m")
+        # LE sawtooth: amplitude + wavelength (Lyu 2016)
+        self.add_input("h_LE_cp",      val=np.zeros(n_cp),           units="m")
+        self.add_input("lambda_LE_cp", val=np.full(n_cp, 2e-3),      units="m")
+        # LE tubercle: amplitude + wavelength (Chaitanya 2017)
+        self.add_input("A_tub_cp",     val=np.zeros(n_cp),           units="m")
+        self.add_input("lambda_tub_cp",val=np.full(n_cp, 2e-3),      units="m")
 
         self.add_output("SPL_total",     val=0.0)
         self.add_output("SPL_broadband", val=0.0)
@@ -726,8 +763,16 @@ class BPMComponent(om.ExplicitComponent):
                 return np.clip(CubicSpline(self._r_cp, cp_vals)(r_R), 0.0, None)
             return None
 
-        h_s  = _interp_cp(inputs["h_s_cp"])
-        h_LE = _interp_cp(inputs["h_LE_cp"])
+        def _interp_cp_pos(cp_vals):
+            """Interpolate, clip to positive (wavelengths must be > 0)."""
+            return np.clip(CubicSpline(self._r_cp, cp_vals)(
+                inputs["r_m"] / self._blade.radius_m), 1e-6, None)
+
+        h_s        = _interp_cp(inputs["h_s_cp"])
+        h_LE       = _interp_cp(inputs["h_LE_cp"])
+        A_tub      = _interp_cp(inputs["A_tub_cp"])
+        lambda_LE  = _interp_cp_pos(inputs["lambda_LE_cp"])
+        lambda_tub = _interp_cp_pos(inputs["lambda_tub_cp"])
 
         res = bpm_noise(
             r_m=inputs["r_m"],
@@ -751,7 +796,9 @@ class BPMComponent(om.ExplicitComponent):
             dQ_dr=inputs["dQ_dr"],
             h_s=h_s,
             h_LE=h_LE,
-            le_type=self.options["le_type"],
+            A_tub=A_tub,
+            lambda_LE=lambda_LE,
+            lambda_tub=lambda_tub,
         )
         outputs["SPL_total"]     = res["SPL_total"]
         outputs["SPL_broadband"] = res["SPL_broadband"]

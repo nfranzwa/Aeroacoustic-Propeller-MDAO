@@ -199,19 +199,26 @@ class BladeGeometry:
             print(f"  {r:5.2f}  {c:7.2f}  {t:7.2f}  {tc:5.3f}  {sw:7.2f}  {z:6.2f}")
 
 
-def baseline_apc7x5e():
-    """Return a BladeGeometry for the APC 7x5E (3-blade) project baseline."""
+def baseline_apc7x5e(num_blades=3):
+    """
+    Return a BladeGeometry for the APC 7x5E project baseline.
+
+    num_blades: 2, 3 (default), 4, or 5. Blade angles are distributed
+    uniformly; chord/twist/geometry stay identical to the 3-blade baseline
+    so the MDAO optimizer finds the optimal shape for the new blade count.
+    """
     g = APC_7X5E_3BLADE
+    blade_angles = np.linspace(0, 360, num_blades, endpoint=False).tolist()
     return BladeGeometry(
         diameter_m       = g["diameter_m"],
-        num_blades       = g["num_blades"],
+        num_blades       = num_blades,
         r_R              = g["r_R"],
         chord_R          = g["chord_R"],
         twist_deg        = g["twist_deg"],
         tc_ratio         = g["tc_ratio"],
         sweep_R          = g["sweep_R"],
         z_offset_R       = g["z_offset_R"],
-        blade_angles_deg = g["blade_angles_deg"],
+        blade_angles_deg = blade_angles,
         airfoil          = g["airfoil"],
         camber_dist      = g["camber_dist"],
     )
