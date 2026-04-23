@@ -6,12 +6,12 @@ total SPL reduction comes from: TBL-TE, LBL-VS, Amiet LETI, BVI tonal.
 
 Usage
 -----
-  python results/noise_breakdown.py                     # uses hard-coded 2-start best
-  python results/noise_breakdown.py --rpm 7000 \
-    --dtwist -0.49 -0.444 1.807 2.522 0.587 \
-    --dchord -0.05 -0.05 -0.05 -0.05 -0.05 \
-    --sweep  0.0  0.0   0.0   0.12  0.12  \
-    --dtc    0.0376 0.0265 -0.0283 0.0333 0.0397
+  python results/noise_breakdown.py                # uses hardened-model 71.77 dBA optimum
+  python results/noise_breakdown.py --rpm 6052 \
+    --dtwist -0.75  2.981  0.397  4.999  4.776 \
+    --dchord  0.022 -0.015 -0.015 -0.015 -0.015 \
+    --sweep   0.0   0.0    0.1135 0.1135 0.1185 \
+    --dtc    -0.0064 -0.0264 -0.0153 0.0047 0.0247
 """
 
 import sys
@@ -184,15 +184,16 @@ def plot_breakdown(baseline_hover, opt_hover, baseline_cruise, opt_cruise, out_d
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rpm",     type=float, default=7000.0)
+    # Defaults: hardened-model 71.77 dBA optimum (8-start, 2026-04-22)
+    parser.add_argument("--rpm",     type=float, default=6052.0)
     parser.add_argument("--dtwist",  type=float, nargs=N_CP,
-                        default=[-0.49, -0.444, 1.807, 2.522, 0.587])
+                        default=[-0.75, 2.981, 0.397, 4.999, 4.776])
     parser.add_argument("--dchord",  type=float, nargs=N_CP,
-                        default=[-0.05, -0.05, -0.05, -0.05, -0.05])
+                        default=[0.022, -0.015, -0.015, -0.015, -0.015])
     parser.add_argument("--sweep",   type=float, nargs=N_CP,
-                        default=[0.0, 0.0, 0.0, 0.12, 0.12])
+                        default=[0.0, 0.0, 0.1135, 0.1135, 0.1185])
     parser.add_argument("--dtc",     type=float, nargs=N_CP,
-                        default=[0.0376, 0.0265, -0.0283, 0.0333, 0.0397])
+                        default=[-0.0064, -0.0264, -0.0153, 0.0047, 0.0247])
     args = parser.parse_args()
 
     blade_base = baseline_apc7x5e()
@@ -202,9 +203,10 @@ def main():
         np.array(args.sweep),  np.array(args.dtc),
     )
 
+    RPM_BASELINE = 7000.0
     print("Running BEM + BPM for baseline and optimum...")
-    base_hover   = _run_case(blade_base, RPM_BASELINE := 7000.0, 0.0,    "Baseline hover")
-    base_cruise  = _run_case(blade_base, RPM_BASELINE,           CRUISE_VINF, "Baseline cruise")
+    base_hover   = _run_case(blade_base, RPM_BASELINE, 0.0,         "Baseline hover")
+    base_cruise  = _run_case(blade_base, RPM_BASELINE, CRUISE_VINF, "Baseline cruise")
     opt_hover    = _run_case(blade_opt,  args.rpm,               0.0,    "Optimum hover")
     opt_cruise   = _run_case(blade_opt,  args.rpm,               CRUISE_VINF, "Optimum cruise")
 

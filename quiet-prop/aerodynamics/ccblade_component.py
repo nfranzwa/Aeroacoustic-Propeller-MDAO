@@ -23,27 +23,35 @@ from geometry.blade_generator import baseline_apc7x5e
 # NACA 4412 polar  (Re ~ 50 000–200 000, UAV propeller regime)
 # ---------------------------------------------------------------------------
 
-def _naca4412_polar(alpha_deg):
-    alpha = np.asarray(alpha_deg, dtype=float)
+def _naca4412_polar(alpha_deg, camber=0.04):
+    """
+    NACA 4-series polar parametrized by local max camber fraction.
+
+    Zero-lift angle: alpha0 = -camber * 100 deg  (NACA 4412 -> alpha0 = -4 deg).
+    Thin-airfoil result: alpha0 tracks linearly with max camber (Jacobs 1933).
+    camber can be a scalar or array of the same length as alpha_deg.
+    """
+    alpha  = np.asarray(alpha_deg, dtype=float)
+    alpha0 = -np.asarray(camber, dtype=float) * 100.0 * np.ones_like(alpha)
+
     cl = np.zeros_like(alpha)
     cd = np.zeros_like(alpha)
 
-    alpha0          = -4.0
     cl_slope        = 0.1097      # per degree
     alpha_stall_pos =  14.0
     alpha_stall_neg = -10.0
 
     att = (alpha > alpha_stall_neg) & (alpha < alpha_stall_pos)
-    cl[att] = cl_slope * (alpha[att] - alpha0)
+    cl[att] = cl_slope * (alpha[att] - alpha0[att])
 
     sp = alpha >= alpha_stall_pos
     sn = alpha <= alpha_stall_neg
     cl[sp] = 0.95 * np.sin(np.deg2rad(2 * alpha[sp]))
     cl[sn] = 0.95 * np.sin(np.deg2rad(2 * alpha[sn]))
 
-    cd0        = 0.010
+    cd0 = 0.010
     cl_mindrag = cl_slope * (2.0 - alpha0)
-    cd[att]    = cd0 + (cl[att] - cl_mindrag) ** 2 / (np.pi * 0.85 * 6.0)
+    cd[att]    = cd0 + (cl[att] - cl_mindrag[att]) ** 2 / (np.pi * 0.85 * 6.0)
     cd[sp]     = 0.15 + 1.5 * np.sin(np.deg2rad(alpha[sp])) ** 2
     cd[sn]     = 0.15 + 1.5 * np.sin(np.deg2rad(alpha[sn])) ** 2
 
@@ -100,7 +108,7 @@ def _michel_transition(Re_c, aoa_deg):
 # Static / hover BEM  (V_inf = 0)
 # ---------------------------------------------------------------------------
 
-def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
+def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, camber=0.04,
                 tol=1e-8, max_iter=300):
     phi = np.deg2rad(twist_deg) * 0.4
     phi = np.clip(phi, 0.02, np.pi / 4)
@@ -110,7 +118,7 @@ def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
         phi_old = phi.copy()
 
         alpha_d = twist_deg - np.degrees(phi)
-        cl, cd  = _naca4412_polar(alpha_d)
+        cl, cd  = _naca4412_polar(alpha_d, camber)
         cn      = cl * np.cos(phi) + cd * np.sin(phi)
         ct      = cl * np.sin(phi) - cd * np.cos(phi)
 
@@ -129,7 +137,7 @@ def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
             break
 
     alpha_d = twist_deg - np.degrees(phi)
-    cl, cd  = _naca4412_polar(alpha_d)
+    cl, cd  = _naca4412_polar(alpha_d, camber)
     cn      = cl * np.cos(phi) + cd * np.sin(phi)
     ct      = cl * np.sin(phi) - cd * np.cos(phi)
 
@@ -147,7 +155,7 @@ def _bem_static(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho,
 # Forward-flight BEM  (V_inf >= threshold)
 # ---------------------------------------------------------------------------
 
-def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
+def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V, camber=0.04,
                  tol=1e-8, max_iter=300):
     a  = np.full(len(r), 0.05)
     ap = np.zeros(len(r))
@@ -161,7 +169,7 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
         phi = np.arctan2(V_a, V_t)
 
         alpha_d = twist_deg - np.degrees(phi)
-        cl, cd  = _naca4412_polar(alpha_d)
+        cl, cd  = _naca4412_polar(alpha_d, camber)
         cn      = cl * np.cos(phi) + cd * np.sin(phi)
         ct      = cl * np.sin(phi) - cd * np.cos(phi)
 
@@ -188,7 +196,7 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
     V_t   = omega * r * (1.0 + ap)
     phi   = np.arctan2(V_a, V_t)
     alpha_d = twist_deg - np.degrees(phi)
-    cl, cd  = _naca4412_polar(alpha_d)
+    cl, cd  = _naca4412_polar(alpha_d, camber)
     cn      = cl * np.cos(phi) + cd * np.sin(phi)
     ct      = cl * np.sin(phi) - cd * np.cos(phi)
     v_rel   = np.sqrt(V_a ** 2 + V_t ** 2)
@@ -206,7 +214,7 @@ def _bem_forward(r, chord, twist_deg, sigma, omega, R, R_hub, B, rho, V,
 STATIC_THRESHOLD = 0.5    # m/s
 
 def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
-              chord_override=None, twist_override=None,
+              chord_override=None, twist_override=None, camber_override=None,
               tol=1e-8, max_iter=300):
     """
     Blade Element Momentum solver.
@@ -225,15 +233,20 @@ def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
         chord = np.asarray(chord_override, dtype=float)
     if twist_override is not None:
         twist_deg = np.asarray(twist_override, dtype=float)
+    if camber_override is not None:
+        camber = np.asarray(camber_override, dtype=float)
+    else:
+        r_R_n = np.linspace(blade.r_R[0], blade.r_R[-1], n_stations)
+        camber = np.interp(r_R_n, blade.r_R, blade.camber_dist)
     r     = np.clip(r, R_hub + 1e-6, R - 1e-6)
     sigma = B * chord / (2.0 * np.pi * r)
 
     args = (r, chord, twist_deg, sigma, omega, R, R_hub, B, rho)
 
     if V < STATIC_THRESHOLD:
-        phi, alpha_d, cl, cd, v_rel, dT, dQ = _bem_static(*args, tol=tol, max_iter=max_iter)
+        phi, alpha_d, cl, cd, v_rel, dT, dQ = _bem_static(*args, camber, tol=tol, max_iter=max_iter)
     else:
-        phi, alpha_d, cl, cd, v_rel, dT, dQ = _bem_forward(*args, V, tol=tol, max_iter=max_iter)
+        phi, alpha_d, cl, cd, v_rel, dT, dQ = _bem_forward(*args, V, camber, tol=tol, max_iter=max_iter)
 
     thrust = float(np.trapezoid(dT, r))
     torque = float(np.trapezoid(dQ, r))
@@ -259,6 +272,7 @@ def bem_solve(blade, rpm, v_inf, rho=1.225, n_stations=20,
         "efficiency": efficiency, "CT": CT, "CP": CP,
         "r": r, "v_rel": v_rel, "aoa_deg": alpha_d,
         "cl": cl, "cd": cd, "x_tr_c": x_tr_c,
+        "dT_dr": dT, "dQ_dr": dQ,
     }
 
 
@@ -277,12 +291,15 @@ class CCBladeComponent(om.ExplicitComponent):
         self._blade = self.options["blade"] or baseline_apc7x5e()
         N = self.options["n_stations"]
         _, chord0, twist0 = self._blade.get_stations(N)
+        r_R_n = np.linspace(self._blade.r_R[0], self._blade.r_R[-1], N)
+        camber0 = np.interp(r_R_n, self._blade.r_R, self._blade.camber_dist)
 
         self.add_input("rpm",       val=5000.0,    units="rpm")
         self.add_input("v_inf",     val=0.0,        units="m/s")
         self.add_input("rho",       val=1.225,      units="kg/m**3")
         self.add_input("chord_m",   val=chord0,     units="m")
         self.add_input("twist_deg", val=twist0)
+        self.add_input("camber",    val=camber0)
 
         self.add_output("thrust",     val=0.0, units="N")
         self.add_output("torque",     val=0.0, units="N*m")
@@ -296,6 +313,8 @@ class CCBladeComponent(om.ExplicitComponent):
         self.add_output("cl",      val=np.zeros(N))
         self.add_output("cd",      val=np.zeros(N))
         self.add_output("x_tr_c",  val=np.ones(N))   # transition location
+        self.add_output("dT_dr",   val=np.zeros(N), units="N/m")
+        self.add_output("dQ_dr",   val=np.zeros(N), units="N*m/m")
 
     def setup_partials(self):
         self.declare_partials("*", "*", method="fd", step=self.options["fd_step"])
@@ -307,7 +326,8 @@ class CCBladeComponent(om.ExplicitComponent):
                         rho=float(inputs["rho"][0]),
                         n_stations=self.options["n_stations"],
                         chord_override=inputs["chord_m"],
-                        twist_override=inputs["twist_deg"])
+                        twist_override=inputs["twist_deg"],
+                        camber_override=inputs["camber"])
         for k in ("thrust", "torque", "power", "efficiency", "CT", "CP"):
             outputs[k] = res[k]
         outputs["r_m"]     = res["r"]
@@ -316,6 +336,8 @@ class CCBladeComponent(om.ExplicitComponent):
         outputs["cl"]      = res["cl"]
         outputs["cd"]      = res["cd"]
         outputs["x_tr_c"]  = res["x_tr_c"]
+        outputs["dT_dr"]   = res["dT_dr"]
+        outputs["dQ_dr"]   = res["dQ_dr"]
 
 
 if __name__ == "__main__":

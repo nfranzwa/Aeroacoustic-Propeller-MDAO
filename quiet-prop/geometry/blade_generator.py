@@ -35,6 +35,8 @@ APC_7X5E_3BLADE = {
     "tc_ratio": np.array([0.120, 0.120, 0.119, 0.118, 0.117, 0.116, 0.115,
                           0.114, 0.112, 0.110, 0.108, 0.105, 0.102, 0.098,
                           0.094, 0.090, 0.085, 0.078]),
+    # NACA 4412: uniform 4% max camber (first NACA digit / 100)
+    "camber_dist": np.full(18, 0.04),
     "sweep_R": np.zeros(18),
     "z_offset_R": np.zeros(18),
     "blade_angles_deg": np.array([0.0, 120.0, 240.0]),
@@ -62,7 +64,7 @@ class BladeGeometry:
 
     def __init__(self, diameter_m, num_blades, r_R, chord_R, twist_deg,
                  tc_ratio=None, sweep_R=None, z_offset_R=None,
-                 blade_angles_deg=None, airfoil="NACA4412"):
+                 blade_angles_deg=None, airfoil="NACA4412", camber_dist=None):
         self.diameter_m = float(diameter_m)
         self.radius_m   = diameter_m / 2.0
         self.num_blades = int(num_blades)
@@ -77,6 +79,7 @@ class BladeGeometry:
         self.blade_angles_deg = (np.asarray(blade_angles_deg, dtype=float)
                                  if blade_angles_deg is not None
                                  else np.linspace(0.0, 360.0, num_blades, endpoint=False))
+        self.camber_dist    = np.asarray(camber_dist, dtype=float) if camber_dist is not None else np.full(N, 0.04)
 
     # ---- Derived properties ------------------------------------------------
 
@@ -139,6 +142,7 @@ class BladeGeometry:
             z_offset_R       = kw.get("z_offset_R",       self.z_offset_R),
             blade_angles_deg = kw.get("blade_angles_deg", self.blade_angles_deg),
             airfoil          = self.airfoil,
+            camber_dist      = kw.get("camber_dist",      self.camber_dist),
         )
 
     def perturb_chord(self, delta_chord_R):
@@ -162,6 +166,10 @@ class BladeGeometry:
 
     def set_blade_angles(self, blade_angles_deg):
         return self._copy_with(blade_angles_deg=np.asarray(blade_angles_deg, dtype=float))
+
+    def set_camber(self, camber_abs):
+        """Set absolute camber distribution (fraction, e.g. 0.04 = 4%)."""
+        return self._copy_with(camber_dist=np.clip(np.asarray(camber_abs), 0.01, 0.10))
 
     # ---- Rotor balance ------------------------------------------------------
 
@@ -205,6 +213,7 @@ def baseline_apc7x5e():
         z_offset_R       = g["z_offset_R"],
         blade_angles_deg = g["blade_angles_deg"],
         airfoil          = g["airfoil"],
+        camber_dist      = g["camber_dist"],
     )
 
 

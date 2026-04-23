@@ -23,6 +23,8 @@ import numpy as np
 import openmdao.api as om
 import sys
 import os
+from scipy.special import jv as _bessel_j
+from scipy.interpolate import CubicSpline
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from geometry.blade_generator import baseline_apc7x5e
@@ -120,7 +122,7 @@ def _delta_star(chord, v_rel, aoa_deg, x_tr_c=0.0):
 # TBL-TE broadband (turbulent trailing edge)
 # ---------------------------------------------------------------------------
 
-def _tbl_te_spl(chord, v_rel, aoa_deg, dr, r_obs=1.0, x_tr_c=0.0):
+def _tbl_te_spl(chord, v_rel, aoa_deg, dr, r_obs=1.0, x_tr_c=0.0, h_s=0.0):
     if v_rel < 1.0:
         return np.full(len(THIRD_OCT_FREQS), -200.0)
 
@@ -141,7 +143,19 @@ def _tbl_te_spl(chord, v_rel, aoa_deg, dr, r_obs=1.0, x_tr_c=0.0):
     spl_s = base_s + K1 + _bpm_A(St_s / St1)
     spl_p = base_p + K1 + _bpm_A(St_p / St1)
 
-    return 10 * np.log10(10 ** (spl_s / 10) + 10 ** (spl_p / 10) + 1e-300)
+    spl = 10 * np.log10(10 ** (spl_s / 10) + 10 ** (spl_p / 10) + 1e-300)
+
+    if h_s > 1e-6:
+        # Howe (1991) compact sawtooth serration reduction.
+        # G = cos²(arg), arg = clip(π f h_s / U_c, 0, π/2)
+        # U_c = 0.7 v_rel (convective velocity at TE).
+        # arg clamped to first quadrant: monotone reduction, no oscillation artifacts.
+        U_c = max(0.7 * v_rel, 1.0)
+        arg = np.clip(np.pi * f * h_s / U_c, 0.0, np.pi / 2)
+        G_s = np.maximum(np.cos(arg) ** 2, 1e-3)   # floor at -30 dB
+        spl += 10 * np.log10(G_s)
+
+    return spl
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +194,30 @@ def _lbl_vs_spl(chord, v_rel, aoa_deg, dr, r_obs=1.0):
     dim = 10 * np.log10(np.maximum(ds * M ** 5 * dr / r_obs ** 2, 1e-300))
 
     return dim + K_lbl + aoa_boost + _bpm_A(St / St_peak)
+
+
+# ---------------------------------------------------------------------------
+# ITU-R BS.468 noise weighting (better than A-weighting for tonal/impulsive)
+# ---------------------------------------------------------------------------
+
+_ITU468_WEIGHT = np.array([
+    -29.9, -26.2, -22.5, -19.4, -16.1, -13.4, -10.9,  -8.6,  -6.6,  -4.8,
+     -3.2,  -1.9,  -0.8,   0.0,   0.6,   1.0,   1.2,   1.3,   1.2,
+      1.0,   0.5,  -0.1,  -1.1,  -2.5,  -4.3,  -6.6,  -9.3,
+], dtype=float)
+
+# ITU-R 468 peaks at 6.3 kHz (+12.2 dB) then rolls off; re-center on 1 kHz = 0 dB
+_ITU468_WEIGHT_RAW = np.array([
+    -29.9, -26.2, -22.5, -19.4, -16.1, -13.4, -10.9,  -8.6,  -6.6,  -4.8,
+     -3.2,  -1.9,  -0.8,   0.0,   0.6,   1.0,   1.2,   1.3,   1.2,
+      1.0,   0.5,  -0.1,  -1.1,  -2.5,  -4.3,  -6.6,  -9.3,
+], dtype=float)
+
+
+def _itu468_weight_interp(freq):
+    """ITU-R BS.468 correction [dB] at arbitrary frequency (log-linear interp)."""
+    return float(np.interp(np.log10(max(freq, 1.0)),
+                           np.log10(THIRD_OCT_FREQS), _ITU468_WEIGHT_RAW))
 
 
 # ---------------------------------------------------------------------------
@@ -257,38 +295,115 @@ def _a_weight_interp(freq):
 def _bvi_tonal_spl(thrust, rpm, num_blades, radius_m,
                    blade_angles_deg=None, rho=1.225, r_obs=1.0, n_harmonics=5):
     """
-    A-weighted BVI tonal SPL [dBA] — Widnall (1971) / Leishman (2006) parametric.
+    A-weighted BVI tonal SPL [dBA] — multi-rotor-harmonic model.
 
-    Physics:
-        Γ_tip = T / (ρ B Ω R π)          lifting-line tip vortex circulation
-        h     = v_i / (B Ω)              miss distance; v_i = sqrt(T/2ρπR²)
-        p_m   = ρ v_tip Γ / (2π r_obs)  × m^-1.5 × F_int(m)
+    Sums over every rotor harmonic k = 1..n_harmonics*B (not just BPF multiples):
+        C_1 = p_ref * sqrt(B)               single-blade reference [normalised]
+        p_k = C_1 * k^-1.5 * |Σ_j exp(j·k·θ_j)|   k-th rotor harmonic pressure
 
-    At APC 7x5E baseline (7000 RPM, 2.87 N): ~64 dBA — ~10 dB below broadband.
-    Gradients w.r.t. thrust flow back through the MDAO graph.
+    For equal spacing |Σ exp(j·k·θ)| = B at k = m·B and 0 otherwise,
+    recovering the original m^-1.5 * F_int formula exactly.
+    For unequal spacing, sub-harmonics (k ≠ m·B) appear and contribute — the
+    gradient w.r.t. θ_2, θ_3 is then non-zero at off-equal-spacing starting
+    points, enabling SLSQP to find the optimal blade arrangement.
+
+    At APC 7x5E baseline (7000 RPM, 2.87 N, equal spacing): ~64 dBA.
     """
     if thrust <= 0.0:
         return -200.0
 
     Omega  = rpm * 2.0 * np.pi / 60.0
     v_tip  = Omega * radius_m
-    B      = num_blades
-    f_bpf  = B * Omega / (2.0 * np.pi)
+    B      = int(num_blades)
+    f_rot  = rpm / 60.0    # shaft frequency [Hz]
 
-    # Tip vortex circulation from lifting-line / momentum theory
     Gamma_tip = thrust / max(rho * B * Omega * radius_m * np.pi, 1e-12)
+    p_ref     = rho * v_tip * Gamma_tip / (2.0 * np.pi * r_obs)
+    C1        = p_ref * B ** 0.5    # single-blade normalised reference
 
-    # Compact-dipole pressure amplitude reference (m=1, unit spacing factor)
-    p_ref = rho * v_tip * Gamma_tip / (2.0 * np.pi * r_obs)
+    if blade_angles_deg is not None:
+        th = np.deg2rad(np.asarray(blade_angles_deg, dtype=float))
+    else:
+        th = None
+
+    k_arr   = np.arange(1, n_harmonics * B + 1, dtype=float)  # (K,)
+    f_k_arr = k_arr * f_rot
+
+    if th is not None:
+        # (K,1) × (1,B) -> exp sum over blades -> (K,)
+        F_sum_arr = np.abs(np.sum(
+            np.exp(1j * k_arr[:, np.newaxis] * th[np.newaxis, :]), axis=1))
+    else:
+        F_sum_arr = np.where(k_arr % B == 0, float(B), 0.0)
+
+    valid   = F_sum_arr > 1e-9
+    p_k_arr = C1 * k_arr ** (-1.5) * np.where(valid, F_sum_arr, 0.0)
+    a_wts   = np.interp(np.log10(np.maximum(f_k_arr, 1.0)),
+                        np.log10(THIRD_OCT_FREQS), A_WEIGHT)
+    spl_k_a = np.where(valid,
+                       20.0 * np.log10(np.maximum(p_k_arr, 1e-30) / P_REF) + a_wts,
+                       -1000.0)
+    return 10.0 * np.log10(max(float(np.sum(10.0 ** (spl_k_a / 10.0))), 1e-300))
+
+
+# ---------------------------------------------------------------------------
+# Hanson (1980) frequency-domain steady loading tonal noise
+# ---------------------------------------------------------------------------
+
+def hanson_loading_spl(r_m, dT_dr, dQ_dr, rpm, num_blades,
+                       rho=1.225, r_obs=1.0, n_harmonics=5, blade_angles_deg=None):
+    """
+    A-weighted tonal SPL [dBA] from steady blade loading (Hanson 1980).
+
+    Helicoidal surface theory: distributed thrust/torque loading radiates
+    via Bessel-function-weighted span integrals at each BPF harmonic.
+
+        I_T(m) = ∫ (dT/dr) J_{mB}(m·B·M_r) dr          thrust dipole
+        I_Q(m) = ∫ (dQ/r·dr) J'_{mB}(m·B·M_r) c₀/Ω dr  torque dipole
+        |p_m|  = (m·B·Ω) / (4π·r_obs·c₀) · sqrt(I_T² + I_Q²)
+
+    At M_tip ~ 0.17 the Bessel argument m·B·M_r << 1 so each harmonic is
+    ~ 30-37 dBA — well below BVI (~64 dBA) and broadband (~70 dBA) but the
+    distributed gradient d(SPL)/d(dT/dr_i) provides per-span-station signal
+    that the global thrust integral in BVI cannot give.
+    """
+    if np.all(np.asarray(dT_dr) == 0.0):
+        return -200.0
+
+    r_m   = np.asarray(r_m,   dtype=float)
+    dT_dr = np.asarray(dT_dr, dtype=float)
+    dQ_dr = np.asarray(dQ_dr, dtype=float)
+
+    Omega = rpm * 2.0 * np.pi / 60.0
+    B     = int(num_blades)
+    M_r   = Omega * r_m / C_SOUND          # local rotational Mach number
 
     ms_a = 0.0
     for m in range(1, n_harmonics + 1):
+        order = m * B
+        arg   = order * M_r                # m·B·M_r per station
+
+        J     = _bessel_j(order,     arg)
+        dJ    = 0.5 * (_bessel_j(order - 1, arg) - _bessel_j(order + 1, arg))
+
+        I_T = np.trapezoid(dT_dr * J,  r_m)
+
+        dQ_r = dQ_dr / np.maximum(r_m, 1e-6)
+        I_Q  = np.trapezoid(dQ_r * dJ, r_m) * C_SOUND / Omega
+
+        prefactor = (m * B * Omega) / (4.0 * np.pi * r_obs * C_SOUND)
+        p_peak    = prefactor * np.sqrt(I_T ** 2 + I_Q ** 2)
+        p_rms     = p_peak / np.sqrt(2.0)
+
         F_int = (_blade_spacing_factor(m, blade_angles_deg)
                  if blade_angles_deg is not None else 1.0)
-        p_m  = p_ref * float(m) ** (-1.5) * F_int
-        ms_a += p_m ** 2 * 10.0 ** (_a_weight_interp(m * f_bpf) / 10.0)
+        p_rms *= F_int
 
-    return 10.0 * np.log10(max(ms_a / P_REF ** 2, 1e-300))
+        f_m      = m * B * rpm / 60.0
+        spl_m_a  = 20.0 * np.log10(max(p_rms, 1e-30) / P_REF) + _a_weight_interp(f_m)
+        ms_a    += 10.0 ** (spl_m_a / 10.0)
+
+    return 10.0 * np.log10(max(ms_a, 1e-300))
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +476,9 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
               rho=1.225, r_obs=1.0,
               x_tr_c=None, blade_angles_deg=None,
               turb_intensity=0.005, turb_length_scale=0.01,
-              sweep_m=None):
+              sweep_m=None, dT_dr=None, dQ_dr=None,
+              turb_loading_coeff=0.03, h_s=None,
+              h_LE=None, le_type="sawtooth"):
     """
     Compute SPL spectrum (BPM broadband + Amiet LETI).
 
@@ -385,6 +502,16 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
         x_tr_c = np.zeros(N)
     x_tr_c = np.asarray(x_tr_c, dtype=float)
 
+    # Thrust-dependent turbulence: heavier disk loading → stronger tip vortex →
+    # higher inflow turbulence seen by each blade's LE.
+    #   turb_eff = turb_ambient + k × T / (ρ π R² (ΩR)²)
+    # At baseline (2.87 N, 7000 RPM): +0.30% above ambient (total ~0.80%)
+    # At optimum  (2.44 N, 6053 RPM): +0.38% above ambient (total ~0.88%)
+    Omega_eff = rpm * 2.0 * np.pi / 60.0
+    v_tip_eff = Omega_eff * radius_m
+    dyn_denom  = max(rho * np.pi * radius_m ** 2 * v_tip_eff ** 2, 1e-12)
+    turb_intensity = turb_intensity + turb_loading_coeff * thrust / dyn_denom
+
     # Per-station LE sweep angle -> cos⁴ correction for Amiet LETI
     if sweep_m is not None:
         sweep_m = np.asarray(sweep_m, dtype=float)
@@ -396,86 +523,136 @@ def bpm_noise(r_m, chord_m, v_rel, aoa_deg,
     else:
         cos_sweep_arr = np.ones(N)
 
-    n_freqs      = len(THIRD_OCT_FREQS)
-    SPL_spectrum = np.full(n_freqs, -200.0)
+    n_freqs = len(THIRD_OCT_FREQS)
+    dr_arr  = np.gradient(r_m)
+    f_v     = THIRD_OCT_FREQS[np.newaxis, :]         # (1, n_freqs)
 
-    dr_arr = np.gradient(r_m)
+    # --- LETI: fully vectorised across all N stations (dominant source) ---
+    # Eliminates N scalar function calls and N log-linear-log round-trips.
+    chord_v = chord_m[:, np.newaxis]                  # (N, 1)
+    vrel_v  = np.maximum(v_rel, 1.0)[:, np.newaxis]  # (N, 1)
+    dr_v    = dr_arr[:, np.newaxis]                   # (N, 1)
+    cs_v    = cos_sweep_arr[:, np.newaxis]            # (N, 1)
+
+    k0_v   = 2.0 * np.pi * f_v / C_SOUND             # (1, n_freqs)
+    k1_v   = 2.0 * np.pi * f_v / vrel_v              # (N, n_freqs)
+    k1Lt_v = k1_v * turb_length_scale
+    Phi_v  = ((turb_intensity * vrel_v) ** 2
+              * (2.0 * turb_length_scale / vrel_v)
+              / np.maximum((1.0 + k1Lt_v ** 2) ** (5.0 / 6.0), 1e-30))
+    l_y_v  = np.minimum(dr_v, np.pi * turb_length_scale)
+    df_v   = f_v * (2.0 ** (1.0 / 6.0) - 2.0 ** (-1.0 / 6.0))
+    Spp_v  = ((rho * C_SOUND * k0_v) ** 2
+              * (0.5 * chord_v) ** 2 * l_y_v * dr_v
+              * Phi_v / (4.0 * np.pi ** 2 * r_obs ** 2)
+              * cs_v ** 4)                            # (N, n_freqs)
+
+    # LE serration / tubercle reduction on LETI (dominant UAV noise source).
+    #
+    # Sawtooth LE  (Lyu et al. 2016, compact limit):
+    #   G = sinc²(f · h_LE / v_rel)
+    #   sinc(x) = sin(πx)/(πx)  →  first zero at f·h_LE/v_rel = 1
+    #
+    # Sinusoidal LE / tubercles  (Chaitanya et al. 2017, compact approximation):
+    #   G = J₀²(π · f · h_LE / v_rel)
+    #   J₀ first zero at argument ≈ 2.405  →  h_LE ≈ 2.405·v_rel/(π·f)
+    #
+    # Both models approach 1 at h_LE→0 and reduce monotonically in the first lobe.
+    # Typical optimum: h_LE ~ v_rel / (2f_peak), with f_peak ≈ 3–8 kHz for UAV props.
+    if h_LE is not None:
+        h_LE_arr = np.asarray(h_LE, dtype=float)
+        if h_LE_arr.ndim == 0:
+            h_LE_arr = np.full(N, float(h_LE_arr))
+        h_LE_v = np.maximum(h_LE_arr, 0.0)[:, np.newaxis]  # (N, 1)
+        St_v   = f_v * h_LE_v / vrel_v                      # (N, n_freqs)  St = f·h/v
+
+        if le_type == "tubercle":
+            # Sinusoidal LE: J₀²(π·St)
+            G_LE_v = _bessel_j(0, np.pi * St_v) ** 2
+        else:
+            # Sawtooth LE (default): sinc²(St), np.sinc(x) = sin(πx)/(πx)
+            G_LE_v = np.sinc(St_v) ** 2
+
+        G_LE_v = np.maximum(G_LE_v, 1e-3)   # floor at −30 dB; avoids log(0)
+        Spp_v  = Spp_v * G_LE_v
+
+    leti_lin = np.maximum(Spp_v * df_v / P_REF ** 2, 0.0)  # (N, n_freqs), linear (p/Pref)²
+
+    # --- TBL-TE + LBL-VS: single pass, linear accumulation (no log round-trips) ---
+    tbl_lin = np.zeros(n_freqs)
+    lbl_lin = np.zeros(n_freqs)
+
     for i in range(N):
-        c     = float(chord_m[i])
-        vr    = float(v_rel[i])
-        aoa_i = float(aoa_deg[i])
-        dr_i  = float(dr_arr[i])
-        xtr_i = float(x_tr_c[i])
-
-        # TBL-TE (turbulent fraction)
+        xtr_i  = float(x_tr_c[i])
         w_turb = 1.0 - xtr_i
-        if w_turb > 0.01:
-            spl_tbl = _tbl_te_spl(c, vr, aoa_i, dr_i, r_obs, xtr_i)
-            SPL_spectrum = 10 * np.log10(
-                10 ** (SPL_spectrum / 10) +
-                w_turb * 10 ** (spl_tbl / 10) + 1e-300)
+        h_s_i  = float(h_s[i]) if h_s is not None else 0.0
+        if w_turb > 0.01 and float(v_rel[i]) >= 1.0:
+            tbl_lin += w_turb * 10 ** (_tbl_te_spl(
+                float(chord_m[i]), float(v_rel[i]), float(aoa_deg[i]),
+                float(dr_arr[i]), r_obs, xtr_i, h_s=h_s_i) / 10.0)
+        if xtr_i > 0.30 and float(v_rel[i]) >= 1.0:
+            lbl_lin += xtr_i * 10 ** (_lbl_vs_spl(
+                float(chord_m[i]), float(v_rel[i]), float(aoa_deg[i]),
+                float(dr_arr[i]), r_obs) / 10.0)
 
-        # LBL-VS (laminar fraction; activated when x_tr_c > 0.3)
-        if xtr_i > 0.30:
-            spl_lbl = _lbl_vs_spl(c, vr, aoa_i, dr_i, r_obs)
-            SPL_spectrum = 10 * np.log10(
-                10 ** (SPL_spectrum / 10) +
-                xtr_i * 10 ** (spl_lbl / 10) + 1e-300)
-
-        # Amiet LETI — dominant for real drones; sensitive to chord and v_rel
-        spl_leti = _amiet_leti_spl(c, vr, dr_i, r_obs,
-                                   turb_intensity, turb_length_scale, rho,
-                                   cos_sweep=float(cos_sweep_arr[i]))
-        SPL_spectrum = 10 * np.log10(
-            10 ** (SPL_spectrum / 10) + 10 ** (spl_leti / 10) + 1e-300)
-
-    SPL_broadband = 10 * np.log10(np.sum(10 ** (SPL_spectrum / 10)) + 1e-300)
+    leti_lin_sum    = np.sum(leti_lin, axis=0)              # (n_freqs,)
+    linear_spectrum = tbl_lin + lbl_lin + leti_lin_sum
+    SPL_spectrum    = 10.0 * np.log10(np.maximum(linear_spectrum, 1e-300))
+    SPL_broadband   = 10.0 * np.log10(np.sum(linear_spectrum) + 1e-300)
 
     # BVI tonal (unsteady loading, dominant real-drone tonal mechanism)
-    SPL_tonal = _bvi_tonal_spl(thrust, rpm, num_blades, radius_m,
-                                blade_angles_deg, rho, r_obs)
+    SPL_bvi = _bvi_tonal_spl(thrust, rpm, num_blades, radius_m,
+                              blade_angles_deg, rho, r_obs)
+
+    # Hanson (1980) steady loading tonal via distributed dT/dr, dQ/dr
+    if dT_dr is not None and dQ_dr is not None:
+        SPL_hanson = hanson_loading_spl(r_m, dT_dr, dQ_dr, rpm, num_blades,
+                                        rho, r_obs, blade_angles_deg=blade_angles_deg)
+    else:
+        SPL_hanson = -200.0
+
+    SPL_tonal = 10.0 * np.log10(
+        10.0 ** (SPL_bvi / 10.0) + 10.0 ** (SPL_hanson / 10.0) + 1e-300)
 
     SPL_A        = SPL_spectrum + A_WEIGHT
     SPL_bb_a     = 10 * np.log10(np.sum(10 ** (SPL_A / 10)) + 1e-300)
     SPL_total    = 10 * np.log10(
         10 ** (SPL_bb_a / 10) + 10 ** (SPL_tonal / 10) + 1e-300)
 
-    # --- Per-mechanism breakdown (for post-processing / noise_breakdown.py) ---
-    spec_tbl  = np.full(n_freqs, -200.0)
-    spec_lbl  = np.full(n_freqs, -200.0)
-    spec_leti = np.full(n_freqs, -200.0)
-    for i in range(N):
-        c     = float(chord_m[i])
-        vr    = float(v_rel[i])
-        aoa_i = float(aoa_deg[i])
-        dr_i  = float(dr_arr[i])
-        xtr_i = float(x_tr_c[i])
-
-        w_turb = 1.0 - xtr_i
-        if w_turb > 0.01:
-            s = _tbl_te_spl(c, vr, aoa_i, dr_i, r_obs, xtr_i)
-            spec_tbl = 10 * np.log10(10**(spec_tbl/10) + w_turb * 10**(s/10) + 1e-300)
-        if xtr_i > 0.30:
-            s = _lbl_vs_spl(c, vr, aoa_i, dr_i, r_obs)
-            spec_lbl = 10 * np.log10(10**(spec_lbl/10) + xtr_i * 10**(s/10) + 1e-300)
-        s = _amiet_leti_spl(c, vr, dr_i, r_obs, turb_intensity, turb_length_scale,
-                             rho, cos_sweep=float(cos_sweep_arr[i]))
-        spec_leti = 10 * np.log10(10**(spec_leti/10) + 10**(s/10) + 1e-300)
+    # Per-mechanism breakdown — derived from first-pass linear arrays (no second loop)
+    spec_tbl  = 10.0 * np.log10(np.maximum(tbl_lin,      1e-300))
+    spec_lbl  = 10.0 * np.log10(np.maximum(lbl_lin,      1e-300))
+    spec_leti = 10.0 * np.log10(np.maximum(leti_lin_sum, 1e-300))
 
     def _dba(spec):
         return 10 * np.log10(np.sum(10**((spec + A_WEIGHT)/10)) + 1e-300)
+
+    def _ditu(spec):
+        return 10 * np.log10(np.sum(10**((spec + _ITU468_WEIGHT_RAW)/10)) + 1e-300)
+
+    # ITU-R BS.468 total (broadband + tonal combined)
+    SPL_itu468_bb = _ditu(SPL_spectrum)
+    SPL_itu468    = 10 * np.log10(
+        10 ** (SPL_itu468_bb / 10) + 10 ** (SPL_tonal / 10) + 1e-300)
+
+    # Thrust-to-noise merit factor: thrust [N] / acoustic pressure [Pa] at r_obs
+    p_rms_total = P_REF * 10.0 ** (SPL_total / 20.0)
+    merit_factor = thrust / max(p_rms_total, 1e-30)
 
     return {
         "SPL_total":     SPL_total,
         "SPL_broadband": SPL_broadband,
         "SPL_tonal":     SPL_tonal,
+        "SPL_itu468":    SPL_itu468,
+        "merit_factor":  merit_factor,
         "freq":          THIRD_OCT_FREQS.copy(),
         "SPL_spectrum":  SPL_spectrum,
         # per-mechanism A-weighted totals
         "SPL_tbl_te_dBA":  _dba(spec_tbl),
         "SPL_lbl_vs_dBA":  _dba(spec_lbl),
         "SPL_leti_dBA":    _dba(spec_leti),
-        "SPL_bvi_dBA":     SPL_tonal,
+        "SPL_bvi_dBA":     SPL_bvi,
+        "SPL_hanson_dBA":  SPL_hanson,
         # per-mechanism spectra (linear, not A-weighted)
         "spec_tbl":   spec_tbl,
         "spec_lbl":   spec_lbl,
@@ -492,15 +669,21 @@ class BPMComponent(om.ExplicitComponent):
     def initialize(self):
         self.options.declare("blade",      default=None)
         self.options.declare("n_stations", default=20)
+        self.options.declare("n_cp",       default=5)
         self.options.declare("r_obs",      default=1.0)
         self.options.declare("fd_step",    default=3e-4)
+        self.options.declare("le_type",    default="sawtooth",
+                             values=["sawtooth", "tubercle"])
 
     def setup(self):
         self._blade = self.options["blade"] or baseline_apc7x5e()
         N      = self.options["n_stations"]
+        n_cp   = self.options["n_cp"]
         n_freq = len(THIRD_OCT_FREQS)
         B      = self._blade.num_blades
         _, chord0, _ = self._blade.get_stations(N)
+
+        self._r_cp = np.linspace(self._blade.r_R[0], self._blade.r_R[-1], n_cp)
 
         self.add_input("r_m",             val=np.zeros(N), units="m")
         self.add_input("chord_m",         val=chord0,       units="m")
@@ -514,12 +697,21 @@ class BPMComponent(om.ExplicitComponent):
         self.add_input("rho",             val=1.225,  units="kg/m**3")
         self.add_input("blade_angles_deg", val=self._blade.blade_angles_deg.copy())
         # Amiet LETI parameters — vary with operating environment
-        self.add_input("turb_intensity",      val=0.005)  # u_rms / v_rel; ~0.3-0.7% for calm hover
+        self.add_input("turb_intensity",      val=0.005)  # ambient u_rms/v_rel; loading term added internally
         self.add_input("turb_length_scale",   val=0.01, units="m")
+        self.add_input("turb_loading_coeff",  val=0.03)  # scales thrust-dependent turbulence amplification
+        self.add_input("dT_dr",  val=np.zeros(N), units="N/m")
+        self.add_input("dQ_dr",  val=np.zeros(N), units="N*m/m")
+        # TE serration depth (inert at UAV Re; TBL-TE = 0)
+        self.add_input("h_s_cp",  val=np.zeros(n_cp), units="m")
+        # LE serration / tubercle amplitude (directly reduces LETI — dominant source)
+        self.add_input("h_LE_cp", val=np.zeros(n_cp), units="m")
 
         self.add_output("SPL_total",     val=0.0)
         self.add_output("SPL_broadband", val=0.0)
         self.add_output("SPL_tonal",     val=0.0)
+        self.add_output("SPL_itu468",    val=0.0)
+        self.add_output("merit_factor",  val=0.0)
         self.add_output("SPL_spectrum",  val=np.zeros(n_freq))
         self.add_output("freq",          val=THIRD_OCT_FREQS.copy(), units="Hz")
 
@@ -527,6 +719,16 @@ class BPMComponent(om.ExplicitComponent):
         self.declare_partials("*", "*", method="fd", step=self.options["fd_step"])
 
     def compute(self, inputs, outputs):
+        r_R = inputs["r_m"] / self._blade.radius_m
+
+        def _interp_cp(cp_vals):
+            if np.any(cp_vals > 1e-6):
+                return np.clip(CubicSpline(self._r_cp, cp_vals)(r_R), 0.0, None)
+            return None
+
+        h_s  = _interp_cp(inputs["h_s_cp"])
+        h_LE = _interp_cp(inputs["h_LE_cp"])
+
         res = bpm_noise(
             r_m=inputs["r_m"],
             chord_m=inputs["chord_m"],
@@ -543,11 +745,19 @@ class BPMComponent(om.ExplicitComponent):
             blade_angles_deg=inputs["blade_angles_deg"],
             turb_intensity=float(inputs["turb_intensity"][0]),
             turb_length_scale=float(inputs["turb_length_scale"][0]),
+            turb_loading_coeff=float(inputs["turb_loading_coeff"][0]),
             sweep_m=inputs["sweep_m"],
+            dT_dr=inputs["dT_dr"],
+            dQ_dr=inputs["dQ_dr"],
+            h_s=h_s,
+            h_LE=h_LE,
+            le_type=self.options["le_type"],
         )
         outputs["SPL_total"]     = res["SPL_total"]
         outputs["SPL_broadband"] = res["SPL_broadband"]
         outputs["SPL_tonal"]     = res["SPL_tonal"]
+        outputs["SPL_itu468"]    = res["SPL_itu468"]
+        outputs["merit_factor"]  = res["merit_factor"]
         outputs["SPL_spectrum"]  = res["SPL_spectrum"]
         outputs["freq"]          = res["freq"]
 

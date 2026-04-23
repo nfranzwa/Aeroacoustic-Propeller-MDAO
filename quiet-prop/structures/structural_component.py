@@ -43,7 +43,7 @@ SAFETY_FACTOR    = 3.5      # fatigue/cyclic loading, FAA AC 35.37-1B
 ALLOWABLE_STRESS = UTS / SAFETY_FACTOR   # 14.3 MPa
 
 # Printer minimum wall: 0.5 mm
-MIN_PRINT_THICKNESS = 0.5e-3   # m
+MIN_PRINT_THICKNESS = 0.7e-3   # m  (raised from 0.5 mm — thin walls under-extrude and delaminate)
 
 
 def compute_stress(r_m, chord_m, tc_ratio, thrust, rpm, num_blades):
